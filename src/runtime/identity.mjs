@@ -35,6 +35,8 @@ function agentFlags(identity) {
     agents,
     allowClaude: agents.includes('claude'),
     allowDimensio: agents.includes('dimensio'),
+    allowCodex: agents.includes('codex'),
+    allowZcode: agents.includes('zcode'),
   };
 }
 

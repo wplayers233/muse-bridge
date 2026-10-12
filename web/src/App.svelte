@@ -16,6 +16,8 @@
   import ClaudePage from './components/ClaudePage.svelte';
   import FilesPanel from './components/FilesPanel.svelte';
   import HarnessPage from './components/HarnessPage.svelte';
+  import CodexPage from './components/CodexPage.svelte';
+  import ZcodePage from './components/ZcodePage.svelte';
   import { onReachabilityChange, startReachabilityWatch } from './lib/server.js';
   import ServerAdmin from './components/admin/ServerAdmin.svelte';
   import ExtensionsPage from './components/ExtensionsPage.svelte';
@@ -152,13 +154,14 @@
   function onVisible() { if (!document.hidden && ui.screen === 'claude') ui.taskDone = false; }
 
   // 手机系统状态栏的背景由 <meta theme-color> 控制（Android Chrome / PWA 据此着色）。
-  // 让它跟随当前页面：dimensio 分页用它自己的页面底色（它有独立的明暗档），其余用主题底色 --bg。
+  // 让它跟随当前页面：自带明暗档的分页（dimensio / Codex / ZCode）用它自己的页面底色，
+  // 其余用主题底色 --bg。
   $effect(() => {
     const screen = ui.screen, chrome = ui.pageChrome;
     ui.theme;   // 依赖：主题切换就重算
     const meta = document.querySelector('meta[name="theme-color"]');
     if (!meta) return;
-    if (screen === 'harness' && chrome?.bg) { meta.content = chrome.bg; return; }
+    if (chrome?.bg && (screen === 'harness' || screen === 'codex' || screen === 'zcode')) { meta.content = chrome.bg; return; }
     const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
     meta.content = bg || '#1f1f1e';
   });
@@ -188,6 +191,12 @@
   <!-- 无权者即便靠陈旧的 screen 状态走到这，也不渲染整页（上面的 effect 会把人送回根页）。
        真闸在服务端 /api/harness。 -->
   <HarnessPage />
+{:else if ui.screen === 'codex' && screenOn('codex')}
+  <!-- 外部 CLI agent（Codex / ZCode）：分页随程序自带，命令行工具在这台机器上另装、分页里的
+       「接入」卡讲清缺什么；真闸在服务端 /api/codex/chat、/api/zcode/chat。 -->
+  <CodexPage />
+{:else if ui.screen === 'zcode' && screenOn('zcode')}
+  <ZcodePage />
 {/if}
 
 {#if single}

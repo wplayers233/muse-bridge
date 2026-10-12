@@ -14,9 +14,14 @@
 
   // claude 入口小人是状态指示器：正面站立 = 默认；举旗 = 有任务完成还没看（ui.taskDone，回 claude 页清除）。
   const claudeMascot = $derived(ui.taskDone ? '举旗' : '正面站立');   // i18n-ignore 素材文件名
+  // 四个入口摆 2×2：前两个是自带的 agent（claude / dimensio），后两个是外部 CLI（codex / zcode，
+  // 图标用各家官方标，见 public/assets/icons/）。明暗主题各一套图标（-dark = 深墨配浅底）。
+  const themeInk = $derived(ui.theme === 'light' ? 'dark' : 'light');
   const ENTRIES = $derived([
     { key: 'claude', label: 'Claude', img: `assets/mascot/claude-小人-${claudeMascot}.svg` },   // i18n-ignore 素材路径
-    { key: 'harness', label: 'dimensio', img: `assets/icons/dimensio-${ui.theme === 'light' ? 'dark' : 'light'}.svg` },
+    { key: 'harness', label: 'dimensio', img: `assets/icons/dimensio-${themeInk}.svg` },        // i18n-ignore 素材路径
+    { key: 'codex', label: 'Codex', img: `assets/icons/codex-${themeInk}.svg` },                // i18n-ignore 素材路径
+    { key: 'zcode', label: 'ZCode', img: `assets/icons/zcode-${themeInk}.svg` },                // i18n-ignore 素材路径
   // 只摆这个身份开着的 agent（服务端下发的 me.agents：全局开关 ∩ 按人授权）；服务端各路由另有真闸。
   ].filter((e) => screenOn(e.key)));
 
@@ -73,9 +78,13 @@
     font-family: var(--serif-stack); font-size: 19px; font-weight: 500; letter-spacing: .01em; color: var(--text);
   }
   .grid {
-    position: fixed; left: 0; right: 0; top: 50%; transform: translateY(-50%); z-index: 5;
-    display: flex; justify-content: center; gap: 28px; padding: 0 24px;
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5;
+    /* 2×2：宽度卡在两列（116×2 + 间距）以内，flex 自动换行——管理员关掉某个 agent 只剩 1/2/3 个
+       入口时，剩下的照样居中，不留空格子。 */
+    display: flex; flex-wrap: wrap; justify-content: center; align-content: center;
+    gap: 30px 40px; width: min(100% - 40px, 336px);
   }
+  @media (max-height: 620px) { .grid { gap: 18px 40px; } }
   .entry { display: flex; flex-direction: column; align-items: center; gap: 12px; }
   /* transform 由 use:pressable 经 --press-s 驱动（按下 CSS 过渡、松手 JS 弹簧），故此处不写 transition */
   .tile {

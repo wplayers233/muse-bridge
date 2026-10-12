@@ -56,3 +56,20 @@ test('从没探到过代理、直连也验不通：如实说没有已验证出�
   assert.equal(r.verified, false);
   assert.match(r.reason, /无已验证出口/);
 });
+
+// 实锤过的坑：Node 的内置 fetch 不认 HTTP_PROXY/HTTPS_PROXY，要 NODE_USE_ENV_PROXY=1 才走代理。
+// 外部 CLI（zcode）自己就是用内置 fetch 的，漏了它登录与每一轮都报 "fetch failed"。
+test('配了代理就顺手设上 NODE_USE_ENV_PROXY=1（Node 内置 fetch 只认它）', async () => {
+  const { initOutboundProxy } = await import('./net-proxy.mjs');
+  const saved = { HTTPS_PROXY: process.env.HTTPS_PROXY, NODE_USE_ENV_PROXY: process.env.NODE_USE_ENV_PROXY };
+  try {
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:7897';
+    delete process.env.NODE_USE_ENV_PROXY;
+    const st = await initOutboundProxy();     // 环境里已有代理 → 走「沿用」分支，不出网
+    assert.equal(st.proxy, 'http://127.0.0.1:7897');
+    assert.equal(process.env.NODE_USE_ENV_PROXY, '1', '不设这一句，子进程里的 fetch 会裸直连');
+  } finally {
+    if (saved.HTTPS_PROXY === undefined) delete process.env.HTTPS_PROXY; else process.env.HTTPS_PROXY = saved.HTTPS_PROXY;
+    if (saved.NODE_USE_ENV_PROXY === undefined) delete process.env.NODE_USE_ENV_PROXY; else process.env.NODE_USE_ENV_PROXY = saved.NODE_USE_ENV_PROXY;
+  }
+});

@@ -88,8 +88,29 @@
 ## 开关 agent（设置 → Agent）
 
 - **「设置 → Agent」**（Settings → Agents），只有管理员有：每个 agent 一个 **「启用」** 开关。关掉的 agent 所有人都看不到它的页面。
-- 状态说明：**「可用」**（Available）；**「还没配认证」**（Not signed in yet）——Claude 没配令牌（有 **「去配置」**（Set up）按钮直达 Claude 账号页）、dimensio 没配任何 key；这台机器上没装（只装了另一个 agent 时）。
+- 一共四个 agent：**Claude**、**dimensio**、**Codex**（OpenAI 的 `codex`）、**ZCode**（Z.ai 的 `zcode`）。后两个是可选的，默认开着但没装就是一张**「接入」**卡。
+- 状态说明：**「可用」**（Available）；**「还没配认证」**（Not signed in yet）——Claude 没配令牌（有 **「去配置」**（Set up）按钮直达 Claude 账号页）、dimensio 没配任何 key、Codex 既没存 key 也没登录过、ZCode 还没在服务器上登录过；这台机器上没装（只装了另一个 agent 时）；Codex / ZCode 没装时这一行直接写「没装：…」。**Codex / ZCode 现在只对管理员开放**（每人一份隔离还没做），注册用户的「能用的 agent」里勾了也不生效。
+- **配凭据（推荐）**：这两行右边的 **「去配置」**（Set up）就地展开一个小面板，两家的接法不一样：
+  - **Codex**：粘一把 OpenAI API key 点 **「保存」**（Save）。key 加密存在服务器上（只回显尾 4 位），跑 CLI 时注进子进程的 `OPENAI_API_KEY`，**不用上机跑交互式登录**；点 **「清除」**（Clear）清掉它，回落到环境变量或 `codex login` 的登录态。面板里同时给出 `codex login` 这条命令（两种都行）。
+  - **ZCode**：它认的是**账号登录**（智谱 / Z.ai 都行，买了 Coding Plan 就是用这份登录态），**没有填 key 这条路**（CLI 不读厂商 key 环境变量，页面上也照实说了「登录走浏览器授权，不认 API key」）。面板里给出该跑的命令：在服务器上跑一次 `zcode login`，浏览器打开它给的链接登录一次即可，登录态存在服务器上、之后一直有效。**两个版本各一条**：智谱国内版 `zcode login bigmodel`，Z.ai 国际版 `zcode login zai`（不带参数默认走 Z.ai）。面板上会标 **「已登录」**（Signed in）/ **「还没登录」**（Not signed in）。
+  - **ZCode 没订阅时**：登录能过，但每一轮都会失败——zcode 先拿登录态去换一张项目令牌，账号没有生效中的 Coding Plan 时上游会拒绝，页面按人话显示「多半是这个账号没有生效中的 Coding Plan（订阅后再登录一次）」。订阅之后重跑一次登录命令即可。
+- 工具还没装时，面板里还有一个 **「在这台机器上装」**（Install on this server）按钮，直接跑该 agent 的官方安装命令。
+- 装 Codex：跑 `curl -fsSL https://chatgpt.com/codex/install.sh | sh` 再 `codex login`；也可以什么都不做——bridge 自带的依赖里就有一份 `codex`，装依赖时已经有了。
+- 装 ZCode：官方只发 macOS / Windows 的安装包，**Linux 上只能照官方仓库自己构建**（官网那个 `install.sh` 地址已经失效）。两个办法都行：在 **「设置 → Agent」** 的 **「去配置」**（Set up）里点 **「在这台机器上装」**（Install on this server），或者自己跑本程序自带的 `bash scripts/server/install-zcode.sh`——它做四件事：取源码（`git clone zai-org/ZCode`，机器上已有源码树时可用 `ZCODE_SRC_DIR=` 指过去）→ `pnpm install` → `pnpm build:zcode` → 把产物解到 `~/.zcode/runtime` 并在 `~/.local/bin` 建 `zcode` 命令。构建比较久（十几分钟起）；打包那一步偶尔会卡在 TUI 资源上，脚本会自动改从 CLI 产物落地（bridge 用的 headless 那条路一样能跑，只是没有交互式 TUI）。装完把 `~/.local/bin` 放进 PATH，再跑一次 `zcode login`——**登录成功会同时写好东西两样**：凭据（`~/.zcode/v2/credentials.json`）和默认模型（`provider_config.json`，登录输出的 `Model:` / `Model selection:` 两行就是它），所以之后 bridge 的每一轮都能直接跑，不用再手工选模型。
+- 这台机器如果必须经代理出海（本机是 `HTTPS_PROXY=…`），别忘了 zcode 是 Node 写的、用的是 Node 内置 `fetch`——**只有设了 `NODE_USE_ENV_PROXY=1` 它才认代理**（bridge 会在启动时自动补上这句，手工在终端里跑 `zcode login` 时要自己带上，否则报 `fetch failed`）。
+- 装完回它的页面点 **「重新检测」**（Check again）就能直接开聊，不用重启服务。页面上的 **「接入」**（Set up）卡同样有安装命令，管理员还能点 **「点这里直接装」**（Install on this server）一步装上。
 - 没装 dimensio 想加上：让 Muse 跑 `set-agents claude,dimensio`（要重新装依赖，几分钟）。
+
+### Codex / ZCode 分页怎么用
+
+两家分页长一个样（骨架照 Claude 页，配色、图标、圆角照各家官方）：
+
+- **窄屏（手机）**：左上角菜单按钮拉出**侧栏抽屉**——`主页` / `新会话` / `接入设置`、**会话**列表（点一条切过去、每条右边的 `✕` 删掉）、**工作目录**（下面跟着 `更换工作目录`），最底下是账户卡。还没开聊时中间是大问候 + 输入栏；聊起来之后输入栏贴底。
+- **工作目录**：每个软件一间**自己的**文件夹（`工作空间/zcode`、`工作空间/codex`），互不打扰，也不会混进 Claude 的项目列表；点 `更换工作目录` 挑别的地方（和 Claude「新建项目」用的是同一个选择器：长按文件夹拖进底栏），换完记得住，重启也在。能选到哪儿由服务端按身份判定：管理员可选整机任意目录，注册用户只能在自己的工作空间里选。
+- **宽屏**：右边常驻一块面板（自带 `会话` / `接入` 两个 tab），左边是对话帧——就是 ZCode 官方的「独立帧」形态。
+- **会话**：每次发问后这一段会记进侧栏，标题取你的第一条消息；`新会话` 开一段新的，旧的点回来还能接着聊（续聊靠 CLI 自己的会话号）。这些记录存在**这台浏览器本地**（localStorage，每边最多留 20 段），换设备看不到。
+- **接入卡**：没装 / 没登录时把卡摊在那一步上，给出该跑的命令与文档链接；`点这里直接装`（管理员）会跑服务端的安装命令。
+
 
 ## dimensio 在多人模式下
 

@@ -11,7 +11,7 @@
   <div class="toast" class:err={toast.kind === 'err'} class:has-act={!!toast.action} role="status" aria-live="polite"
     in:fly={{ y: 12, duration: 180 }} out:fade={{ duration: 160 }}>
     <span>{tr(toast.text)}</span>
-    {#if toast.action}<button class="act" onclick={act}>{t('报告问题')}</button>{/if}
+    {#if toast.action}<button class="act" onclick={act}>{toast.action.label ? tr(toast.action.label) : t('报告问题')}</button>{/if}
   </div>
 {/if}
 

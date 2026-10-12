@@ -3,4 +3,6 @@ export default {
   '语言': 'Language',
   '界面语言': 'Display language',
   '切换后界面会重新加载': 'The app reloads to apply the new language',
+  '界面有新版本': 'A new version of the interface is available',
+  '刷新': 'Refresh',
 };

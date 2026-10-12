@@ -8,6 +8,7 @@ export default {
   'claude::文件': 'Files',
   'claude::任务': 'Tasks',
   'codex::文件': 'Files',
+  'zcode::文件': 'Files',
   'codex::更改': 'Changes',
   // 卡片 ✕ 的 aria：Claude 官方 “Close terminal / Close browser / Resize tasks panel”；任务 / 文件加 panel 免得读成动词短语
   'claude::关闭任务': 'Close tasks panel',

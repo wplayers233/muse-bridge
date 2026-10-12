@@ -21,7 +21,7 @@ import { sessionsDir, sessionPaths } from '../runtime/paths.mjs';
 import { readSessionTitle, readSessionMessages, trimTitle } from './sessions.mjs';
 import { getLiveGens, listGens } from '../runtime/gen.mjs';
 import { contextFor, userIdentity } from '../runtime/identity.mjs';
-import { busPublish } from '../runtime/bus.mjs';
+import { busPublish, busPublishAll } from '../runtime/bus.mjs';
 import * as claudeAccounts from '../runtime/claude-account.mjs';
 import { pendingQuestions } from '../runtime/questions.mjs';
 import { getPolicy, setPolicy, registrationOpen } from '../runtime/policy.mjs';
@@ -163,6 +163,40 @@ export function registerAdminRoutes(router, { authOk, adminCredential = null, ad
     if (!r.error && b.purge === true) { try { rmSync(userRoot(users.normName(String(b.name || ''))), { recursive: true, force: true }); } catch {} }
     return r;
   }));
+
+  // ---- 外部 CLI agent（Codex / ZCode）的凭据与安装 ----
+  // 这两家的 CLI 各自认自己的登录态（codex 写 $CODEX_HOME/auth.json，zcode 写 ~/.zcode/cli/config.json），
+  // 而登录是【交互式】的、网页上点不了。等价物就是这里：管理员在 设置 → Agent 里填一把厂商 key，
+  // 落在加密的凭据文件里（runtime/agent-keys.mjs），跑 CLI 时注进子进程 env。
+  // 返回的只有尾 4 位——整把 key 出去就再也不回来。
+  router.on('GET', '/api/admin/agent-key', async (req, res) => {
+    if (!gate(req, res)) return;
+    const { agentKeyList } = await import('../runtime/agent-keys.mjs');
+    J(res, { keys: agentKeyList() });
+  });
+  // { id, key }：key 为空 = 清掉这一家的凭据（回落到环境变量 / CLI 自己的登录态）。
+  router.on('POST', '/api/admin/agent-key', async (req, res) => {
+    if (!gate(req, res)) return;
+    let b = {}; try { b = JSON.parse(await readBody(req)) || {}; } catch {}
+    const { setAgentKey, agentKeyList } = await import('../runtime/agent-keys.mjs');
+    const { refreshAgentProbes } = await import('../runtime/agent-status.mjs');
+    const r = setAgentKey(String(b.id || ''), b.key);
+    if (r.error) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(r)); return; }
+    refreshAgentProbes();                   // 存完立刻重探（分页的「已接上」当场变绿）
+    busPublishAll({ type: 'agents.changed' });   // 在线客户端刷新可用名单与状态
+    console.log(`[agents] ${r.id} 的凭据${r.has ? '已保存' : '已清除'}（尾 ${r.tail || '—'}）`);
+    J(res, { ...r, keys: agentKeyList() });
+  });
+  // 在这台机器上装它（只认各 agent 表里的官方安装命令，见 config/agents.mjs）：给没自带、又不想手动
+  // 上机的部署用。输出逐行进日志环（控制台「服务控制 → 日志」能看），装完自动重探一次。
+  router.on('POST', '/api/admin/agent-install', async (req, res) => {
+    if (!gate(req, res)) return;
+    let b = {}; try { b = JSON.parse(await readBody(req)) || {}; } catch {}
+    const { runAgentInstall } = await import('../runtime/agent-install.mjs');
+    const r = await runAgentInstall(String(b.id || ''));
+    res.writeHead(r.error ? 400 : 200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(r));
+  });
 
   // ---- 额度与注册（三端拆分 P4）：注册开关、注册用户默认额度、全服同时轮数上限、换日时区 ----
   router.on('GET', '/api/admin/policy', (req, res) => {

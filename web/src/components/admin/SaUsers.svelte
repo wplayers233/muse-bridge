@@ -17,7 +17,7 @@
   let open = $state('');            // 展开了「权限」面板的那个用户
   let busy = $state(false);
 
-  const AGENT_LABEL = { claude: 'Claude', dimensio: 'dimensio' };
+  const AGENT_LABEL = { claude: 'Claude', dimensio: 'dimensio', codex: 'Codex', zcode: 'ZCode' };
   // 某个 agent 对这个人实际生效没有：他被勾了 + 全局开着 + 支持多用户
   const agentState = (id) => sa.agentStatus.find((a) => a.id === id) || null;
   const effective = (u) => (u.agents || []).filter((id) => { const a = agentState(id); return !a || (a.enabled && a.multiUser); });

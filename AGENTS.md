@@ -17,7 +17,12 @@
 
 ## 约定
 
-- agent 只有两个：`claude` 与 `dimensio`（`src/config/agents.mjs` 是单一真相，前后端共用）。
+- agent 一共四个：`claude`、`dimensio`、`codex`、`zcode`（`src/config/agents.mjs` 是单一真相，前后端共用）。
+  `codex` / `zcode` 是**外部 CLI agent**：分页与对话接口随 bridge 自带（`web/src/components/CodexPage.svelte`、
+  `ZcodePage.svelte`，共用 `components/cli/CliChat.svelte`），命令行工具（`codex` / `zcode`）要在这台机器上另装
+  （探测见 `src/runtime/agent-status.mjs`，跑一轮见 `src/runtime/agent-cli.mjs` + `src/routes/agent-cli.mjs`）。
+  它们现在 `multiUser:false`（用宿主自己的登录态与 `~/.codex`、`~/.zcode`，**每人一份隔离还没做**），
+  要开给注册用户得先做每身份的数据目录隔离。
 - Claude 的模型表与默认值只改 `src/config/capabilities.mjs`。
 - 部署目标是 Linux 服务端形态（`BRIDGE_EDITION=server`），数据目录与程序目录分开（`BRIDGE_DATA_ROOT`）。
 - Muse VM 的限制（只能经 HTTP CONNECT 代理出站、`/etc` 重启不保留、没有浏览器沙箱、不能跑 Docker）都包在 `deploy/muse/bootstrap.sh` 里；通用修复放进 `src/` 或 `scripts/server/`，不要写进 Muse 专用脚本。

@@ -43,6 +43,7 @@ import { registerShareSpaceRoutes, resolveShareToken } from './routes/share-spac
 import { registerChatSnapshotRoutes, resolveSnapToken } from './routes/chat-snapshot.mjs';
 import { registerExtensionRoutes } from './routes/extensions.mjs';
 import { registerAgentRoutes } from './routes/agents.mjs';
+import { registerAgentCliRoutes } from './routes/agent-cli.mjs';
 import { registerMeRoutes } from './routes/me.mjs';
 import { enabledAgents } from './runtime/agent-status.mjs';
 import { registerHarnessRoutes } from './routes/harness.mjs';
@@ -144,6 +145,7 @@ registerPairRoutes(router, { identify, adminGen, authCookie, userCookie }); // /
 registerChatRoutes(router, { authOk, identify: identifySnap }); // /api/chat, /api/answer（快照身份可用）
 registerExtensionRoutes(router, { identify });                // /api/extensions* — 扩展中心（技能/连接器/插件，admin）
 registerAgentRoutes(router, { identify });                    // /api/agents — 设置「Agent」页：各 agent 的勾选 / 能跑 / 认证（admin，可远程）
+registerAgentCliRoutes(router, { identify });                 // /api/agents/status + /api/{codex,zcode}/chat（外部 CLI agent 分页，见 routes/agent-cli.mjs）
 registerMeRoutes(router, { identify, getCookie, bearerToken }); // /api/me/{usage,password} — 用户自助：看自己的额度、改自己的密码
 registerUploadRoutes(router, { authOk, identify: identifySnap });   // /api/upload, /api/upload-chunk（快照身份可用）
 registerOverviewRoutes(router, { authOk, identify: identifySnap }); // /api/overview, /api/active, /api/attach (GET+POST), /api/stop, /api/status（快照身份可用）

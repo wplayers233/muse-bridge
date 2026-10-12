@@ -33,7 +33,7 @@ export const compose = $state({ attachments: [] });
 // View + theme.
 export const ui = $state({
   theme: (() => { try { return localStorage.getItem('bridge-theme') || 'dark'; } catch { return 'dark'; } })(), // 与 index.html 早绑定一致
-  screen: 'home',         // 顶层页面: 'home' | 'claude' | 'harness' | 'files'
+  screen: 'home',         // 顶层页面: 'home' | 'claude' | 'harness' | 'files' | 'codex' | 'zcode'
   // 分页自报的页面配色：null = 跟全局 ui.theme。dimensio 分页有自己的明暗档（跟系统/浅/深），
   // 它可能与 bridge 主题不一致——theme-color meta 与内嵌的工作空间视图据此跟它走。
   pageChrome: null,       // null | { dark: boolean, bg: '#rrggbb' }
@@ -99,9 +99,9 @@ export function screenOn(screen) {
 
 // 单 agent 模式：这个身份能进的 agent 分页只剩一个，那一页就是「根页」——没有主页，打开即是
 // 那一页；设置 / 账户收进侧栏底部账户卡；返回键到这一页就是底；工作空间等别的页关掉回这一页。
-// Claude 页与 dimensio 页都做了这层外壳。
+// Claude 页、dimensio 页与两个外部 CLI 页（Codex / ZCode）都做了这层外壳。
 // 没登录时 me.agents 是服务器全局开着的名单：全局只开一个 agent 的服务器，登录框就直接压在那一页上。
-const ROOT_SCREENS = new Set(['claude', 'harness']);
+const ROOT_SCREENS = new Set(['claude', 'harness', 'codex', 'zcode']);
 export function rootScreen() {
   if (!Array.isArray(me.agents)) return 'home';
   const screens = new Set(me.agents.map((id) => AGENT_BY_ID[id]?.screen).filter(Boolean));

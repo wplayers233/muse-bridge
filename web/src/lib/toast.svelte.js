@@ -5,13 +5,15 @@ import { recentFault, openReport } from './feedback.svelte.js';
 
 export const toast = $state({ text: '', kind: 'ok', action: null });
 let _timer = null;
-export function showToast(text, kind = 'ok') {
+// action：{ label, fn } —— 调用方自带按钮文案（换版提示的「刷新」）。不传就按下面这套：
+// 出错（5xx / 连不上）时给「报告问题」。
+export function showToast(text, kind = 'ok', action = null, ms = 0) {
   toast.text = String(text || ''); toast.kind = kind;
   const fault = kind === 'err' ? recentFault() : null;
   // 文字当场记下：点按钮时 toast 先收起（text 清空），再开报告框
   const msg = toast.text;
-  toast.action = fault ? { fn: () => openReport({ error: msg, kind: 'bug' }) } : null;
+  toast.action = action || (fault ? { fn: () => openReport({ error: msg, kind: 'bug' }) } : null);
   if (_timer) clearTimeout(_timer);
-  _timer = setTimeout(() => { toast.text = ''; toast.action = null; }, fault ? 7000 : 3000);
+  _timer = setTimeout(() => { toast.text = ''; toast.action = null; }, ms || (fault ? 7000 : 3000));
 }
 export function hideToast() { if (_timer) clearTimeout(_timer); toast.text = ''; toast.action = null; }

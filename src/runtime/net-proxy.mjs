@@ -150,9 +150,14 @@ function applyProxy(url) {
     process.env.https_proxy = url;
     process.env.NO_PROXY = noProxyList();
     process.env.no_proxy = process.env.NO_PROXY;
+    // Node 的内置 fetch **不**认 HTTP_PROXY/HTTPS_PROXY：实测同一台机器、同一个代理，
+    // 只给 HTTPS_PROXY 是 `fetch failed`，补上 NODE_USE_ENV_PROXY=1 才 204。而外部 CLI
+    // （zcode）自己就是用内置 fetch 出海的——没有这一句，它登录与每一轮都报 fetch failed，
+    // 看起来像网络断了。子进程继承 process.env，所以在出口这一层设一次就够。
+    process.env.NODE_USE_ENV_PROXY = '1';
     setGlobalDispatcher(new EnvHttpProxyAgent());
   } else {
-    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) delete process.env[k];
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NODE_USE_ENV_PROXY']) delete process.env[k];
     setGlobalDispatcher(new Agent());
   }
 }
@@ -256,6 +261,9 @@ export async function initOutboundProxy() {
   if (preset) {
     state = { mode: 'manual', proxy: preset, checkedAt: Date.now(), reason: '沿用启动环境里已有的代理设置' };
     if (!process.env.NO_PROXY) { process.env.NO_PROXY = noProxyList(); process.env.no_proxy = process.env.NO_PROXY; }
+    // 同上：Node 内置 fetch 要 NODE_USE_ENV_PROXY=1 才认代理，而外部 CLI（zcode）靠它出海。
+    // 生产上就是走这条分支（unit 里写死 HTTPS_PROXY），漏了这一句它每一轮都 fetch failed。
+    process.env.NODE_USE_ENV_PROXY = '1';
     setGlobalDispatcher(new EnvHttpProxyAgent());
     console.log('[net] 出站走代理 ' + preset + '（环境变量已指定，不自动探测）');
     return state;

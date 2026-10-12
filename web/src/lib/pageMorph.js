@@ -25,6 +25,8 @@ const ROOTS = {
   claude: '.claude-slide',
   harness: '.hxroot > .shell, .hx-placeholder',   // 入场期间是同色底板（HarnessPage 延后挂载）
   files: '.fd-root:not(.embedded), .ws-root:not(.embedded)',
+  codex: '.cx-root',
+  zcode: '.zc-root',
 };
 
 const html = () => document.documentElement;
