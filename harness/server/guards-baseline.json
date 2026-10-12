@@ -148,6 +148,7 @@
     "workflow-deadline.test.ts": 3,
     "outside-read.test.ts": 4,
     "runtime-env.test.ts": 2,
+    "provider-keys.test.ts": 5,
     "kill-identity.test.ts": 2,
     "steer-tray.test.ts": 3,
     "card-receipts.test.ts": 3,

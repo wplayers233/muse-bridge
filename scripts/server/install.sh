@@ -212,6 +212,7 @@ Environment=PROJECTS_FILE=$DATA/dimensio/projects.json
 Environment=WORKSPACE_DIR=$DATA/dimensio/workspace
 Environment=HARNESS_ENV_FILE=$DATA/dimensio/.env
 Environment=DIMENSIO_CUSTOM_PROVIDERS_DIR=$DATA/dimensio/custom-providers
+Environment=DIMENSIO_PROVIDER_KEYS_DIR=$DATA/dimensio/provider-keys
 EnvironmentFile=-/etc/bridge/bridge.env
 ExecStart=$NODE_BIN src/server.mjs
 Restart=always

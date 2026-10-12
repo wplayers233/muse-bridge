@@ -45,7 +45,7 @@
       "facts": ["Muse 用 set-api-key DEEPSEEK_API_KEY <key> 把 key 写进服务器", "跑命令时会弹审核卡，让用户选「总是允许此站点」", "然后在 dimensio 输入框右下的模型胶囊里换到 DeepSeek（菜单最下面「切换模型服务…」）"],
       "extra": ["换厂商会开一个新对话"] },
     { "id": "q17", "q": "我在 dimensio 的设置里填了通义的 key，过了一晚上它又说没有 key", "chapters": ["03-dimensio.md", "08-faq.md"],
-      "facts": ["在网页设置里填的内置厂商 key 只存在内存里，服务一重启（VM 重启、更新）就没了", "让 Muse 用 set-api-key QWEN_API_KEY 写进服务器，存在磁盘上、重启也在", "这是已知问题"] },
+      "facts": ["老版本里在网页设置里填的内置厂商 key 只存在内存里，服务一重启（VM 重启、更新）就没了", "新版修好了：网页里填的 key 加密存在服务端，重启后还在", "也可以让 Muse 用 set-api-key QWEN_API_KEY 写进服务器，存在磁盘上、重启也在（所有账号共用）", "两边都配了时以网页里填的那把为准"] },
     { "id": "q18", "q": "dimensio 能接 OpenRouter 吗？", "chapters": ["03-dimensio.md"],
       "facts": ["能，用「添加自定义服务」接 OpenAI 兼容接口", "在 Muse 上要先让 Muse 跑 allow-sites <接口地址>，用户把审核卡选成总是允许，不然会连接超时", "填接口地址（到 /v1）、API Key，点「连接并添加」"],
       "extra": ["自定义服务的 key 加密保存在服务器上，重启也在"] },

@@ -126,7 +126,7 @@
     <SRow label={loadErr ? t('连不上 dimensio 服务') : t('正在连接…')} desc={loadErr && loadErr !== t('连不上 dimensio 服务') ? tr(loadErr) : ''} sid="dim-model" />
   </SSection>
 {:else}
-  <SSection title={t('模型服务')} foot={vendor.custom ? t('自定义服务的 Key 加密存在服务端，不回传浏览器。') : t('Key 只存于服务端内存，不落盘、不回传浏览器。')}>
+  <SSection title={t('模型服务')} foot={vendor.custom ? t('自定义服务的 Key 加密存在服务端，不回传浏览器。') : t('Key 加密存在服务端（重启后还在），不回传浏览器。')}>
     <SRow label={vendor.name} desc={`${vendor.company} · ${hx.config.model ?? ''}`} sid="dim-model">
       {#snippet trailing()}<span class="tag" class:warn={!hx.config.hasKey}>{hx.config.hasKey ? t('已配 Key') : t('缺 Key')}</span>{/snippet}
     </SRow>

@@ -8,7 +8,7 @@ export default {
   "已配 Key": "Key set",
   "缺 Key": "No key",
   "自定义服务的 Key 加密存在服务端，不回传浏览器。": "Keys for custom providers are stored encrypted on the server and never sent to the browser.",
-  "Key 只存于服务端内存，不落盘、不回传浏览器。": "The key is kept only in server memory. It’s never written to disk or sent to the browser.",
+  "Key 加密存在服务端（重启后还在），不回传浏览器。": "The key is stored encrypted on the server (it survives restarts) and never sent to the browser.",
   "••••••••（留空保持不变）": "•••••••• (leave blank to keep current)",
   "粘贴 {name} API Key": "Paste your {name} API key",
 

@@ -80,7 +80,8 @@ function stubFetch(handler: (backend: string, n: number) => Response | Promise<R
 }
 
 test.before(() => {
-  // key 不落盘的设计下用 overrideKeys 注入：两家都给 key，链才有得降级。当前会话落在 zhipu
+  // key 走 overrideKeys / 加密存储注入（测试进程的 provider-keys 目录被改道到临时目录）：两家都给 key，
+  // 链才有得降级。当前会话落在 zhipu
   // （原生搜索优先：会话用哪家就先用哪家的搜索，所以最后一次 setConfig 决定排第一的是谁）。
   setConfig({ provider: "gemini", apiKey: "gemini-test-key" });
   setConfig({ provider: "zhipu", apiKey: "zhipu-test-key" });

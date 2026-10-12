@@ -19,6 +19,7 @@ import {
   providerBaseUrl,
 } from "./catalog.ts";
 import { customProviderKey, getCustomProvider, isCustomProviderId, setCustomProviderKey } from "./custom-providers.ts";
+import { savedProviderKey, saveProviderKey } from "./provider-keys.ts";
 
 export interface RuntimeConfig {
   provider: ProviderId;
@@ -42,11 +43,17 @@ export interface RuntimeConfig {
 // Q8：数据位置统一在 paths.ts 解析；这里照旧导出。
 export { defaultWorkspace };
 
-// Keys are kept in memory only (env-provided or set via the UI), never written
-// back to disk. Values are never returned to the client — only a hasKey flag.
+// Keys are resolved in this order: the one set from the UI in this process
+// (overrideKeys), the one saved on disk (provider-keys.ts, encrypted), then the
+// environment (.env / bridge env). Values are never returned to the client — only
+// a hasKey flag. 落盘的那一份修的是「网页里填的 key 一重启就没了」（见 provider-keys.ts）。
 const envKeys: Partial<Record<ProviderId, string>> = {
   anthropic: process.env.ANTHROPIC_API_KEY || undefined,
-  openai: process.env.OPENAI_API_KEY || undefined,
+  // DeepSeek 走 OpenAI 兼容协议，所以目录里 id=openai、地址 api.deepseek.com。
+  // bridge 的 set-api-key / MUSE.md 教的是 DEEPSEEK_API_KEY（bootstrap.sh 会把它写成
+  // OPENAI_API_KEY），agent-status.mjs 也把两个名字都认——这里同样兜一下，别让
+  // 手工在 .env 里写 DEEPSEEK_API_KEY 的人配了却「缺 Key」。
+  openai: process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY || undefined,
   // Qwen reuses the DashScope key already set for the vision-verify channel
   // (same account), unless a dedicated QWEN_API_KEY is provided.
   qwen: process.env.QWEN_API_KEY || process.env.VISION_API_KEY || undefined,
@@ -129,7 +136,7 @@ function initialProvider(): ProviderId {
 }
 
 // ── 选择持久化 ───────────────────────────────────────────────────────────────
-// 上次选的厂商/模型/思考档落盘（API key 永不落盘——保持内存态设计），服务端
+// 上次选的厂商/模型/思考档落盘（API key 不在这里——走 provider-keys.ts 的加密存储），服务端
 // 重启、手机删后台、换设备打开都还是上次的维度。文件缺失/损坏/字段过期一律
 // 静默回默认，绝不因此起不来。文件位置见 paths.ts 的 configFile()。
 const choiceFile = configFile;
@@ -214,7 +221,7 @@ export function configWritesSettled(): Promise<void> {
 //
 // K56：写回防丢失。写之前重读一遍盘上的文件，只改自己管的字段、其余原样保留（别的版本 / 手工加的字段
 // 不被抹掉）；盘上的文件坏了，先原样改名留证（.corrupt-<时间>）再写新的，绝不直接盖掉。API key 与
-// baseUrl 从不落盘（它们来自环境变量或只在内存）。
+// baseUrl 不在这里（key 走 provider-keys.ts 的加密存储，baseUrl 来自环境变量或内存）。
 function persistChoice(): void {
   const mine = {
     v: 1,
@@ -269,11 +276,12 @@ export function defaultBaseUrl(provider: ProviderId): string | undefined {
 
 // ── 共享凭据不外带（租户模式）───────────────────────────────────────────────────
 // 多用户服务端上，租户实例的 envKeys 是服务端的共享 key。租户若能随意改 baseUrl，adapter 就会把共享 key 发到他指定的
-// 任意地址。所以租户模式下：只有这家 provider 用的是租户自己填的 key（overrideKeys），才认他给的 baseUrl；否则地址
+// 任意地址。所以租户模式下：只有这家 provider 用的是租户自己填的 key（overrideKeys / 落盘的那份），才认他给的 baseUrl；否则地址
 // 一律是服务端配置的默认地址。配置接口（resolveConfig）当场拒，建 adapter 时（session.ts）再按这里兜一遍——
 // 落盘的会话配置、之前写进全局配置的地址都绕不过去。
 function usesOwnKey(provider: ProviderId): boolean {
-  return Boolean(overrideKeys[provider]);
+  // 落盘的那把也算自己的：租户填过 key 就能改 baseUrl，重启后这条判断照旧成立（以前只看内存就会松一格）。
+  return Boolean(overrideKeys[provider] || savedProviderKey(provider));
 }
 
 export function effectiveBaseUrl(provider: ProviderId, requested: string | undefined): string | undefined {
@@ -391,9 +399,12 @@ export function setConfig(patch: ConfigPatch): RuntimeConfig {
   const { apiKey, ...rest } = patch;
   config = resolveConfig(config, rest, { ownKey: typeof apiKey === "string" && Boolean(apiKey.trim()) });
   if (typeof apiKey === "string" && apiKey.trim()) {
-    // 自定义服务的 key 落加密存储（重启还在）；内置几家照旧只在内存
+    // 自定义服务的 key 与内置厂商的 key 都落加密存储（重启还在）；内存里的 overrideKeys 只是当轮快照
     if (isCustomProviderId(config.provider)) setCustomProviderKey(config.provider, apiKey.trim());
-    else overrideKeys[config.provider] = apiKey.trim();
+    else {
+      overrideKeys[config.provider] = apiKey.trim();
+      saveProviderKey(config.provider, apiKey.trim());
+    }
   }
   if (config.provider === "mimo" && typeof apiKey === "string" && apiKey.trim() && patch.baseUrl === undefined) {
     config.baseUrl = providerDefaults("mimo").baseUrl;
@@ -404,7 +415,8 @@ export function setConfig(patch: ConfigPatch): RuntimeConfig {
 
 export function resolveKey(provider: ProviderId): string | undefined {
   if (isCustomProviderId(provider)) return customProviderKey(provider);
-  return overrideKeys[provider] || envKeys[provider];
+  // 这一轮刚填的 → 上次填了存住的（加密存储）→ 服务器环境里的（.env / set-api-key）。
+  return overrideKeys[provider] || savedProviderKey(provider) || envKeys[provider];
 }
 
 // 自定义服务被删了而全局正选着它：退回启动时的默认厂商（上次的选择文件也跟着改写）。

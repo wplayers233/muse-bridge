@@ -31,6 +31,8 @@ projects.json
 projects.json.tmp
 # 自定义模型服务（含加密的 API key）
 custom-providers/
+# 内置厂商的 key（设置页填的那把，加密存；provider-keys.ts）
+provider-keys/
 
 # Quick chat: pointer to the current throwaway bucket (the bucket itself lives under ~/.dimensio/quick)
 quick.json

@@ -82,6 +82,12 @@ export function customProvidersDir(): string {
   return guard("自定义模型服务目录", fromEnv("DIMENSIO_CUSTOM_PROVIDERS_DIR") ?? path.resolve(harnessCwd(), "custom-providers"));
 }
 
+// 内置厂商的 API key（provider-keys.ts）：connector-secrets.* 加密存。
+// 与自定义服务分开一处：租户实例指到自己的数据目录（见 routes/harness.mjs），管理员那份留在 harness/ 下。
+export function providerKeysDir(): string {
+  return guard("厂商 key 目录", fromEnv("DIMENSIO_PROVIDER_KEYS_DIR") ?? path.resolve(harnessCwd(), "provider-keys"));
+}
+
 // 快照对话：当前那只桶的指针，与桶根（quick.ts）。
 export function quickFile(): string {
   return guard("快照对话指针", fromEnv("DIMENSIO_QUICK_FILE") ?? path.resolve(harnessCwd(), "quick.json"));

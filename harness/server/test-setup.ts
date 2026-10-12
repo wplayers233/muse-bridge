@@ -30,6 +30,7 @@ if (process.env.DIMENSIO_TEST_ISOLATION !== "1") {
     DIMENSIO_QUICK_FILE: at("quick.json"),
     DIMENSIO_QUICK_ROOT: at("quick"),
     DIMENSIO_CUSTOM_PROVIDERS_DIR: at("custom-providers"),
+    DIMENSIO_PROVIDER_KEYS_DIR: at("provider-keys"),
     PROJECTS_FILE: at("projects.json"),
     PROJECTS_ROOT: at("projects"),
     WORKSPACE_DIR: at("workspace"),

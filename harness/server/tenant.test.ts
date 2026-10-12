@@ -185,6 +185,9 @@ test("租户（真 harness）：POST /api/config 改 baseUrl 带不走服务端�
       // 服务端（bridge）给所有租户共用的 key 与地址
       OPENAI_API_KEY: SHARED,
       OPENAI_BASE_URL: urlOf(official),
+      // 租户自己的 key 存在他自己的 provider-keys 目录里（routes/harness.mjs 会这么传）；
+      // 这里照实例的传法指到他自己的数据目录，别碰到测试进程共用的那份。
+      DIMENSIO_PROVIDER_KEYS_DIR: path.join(data, "provider-keys"),
       BRIDGE_PORT: "",
     },
     stdio: ["ignore", "pipe", "pipe"],

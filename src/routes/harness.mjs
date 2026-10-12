@@ -204,6 +204,11 @@ const admin = new HarnessInstance({
     // 并每分钟自愈（见 harness/server/net-proxy.ts）。继承的 HTTP(S)_PROXY 是
     // bridge 当下的探测快照，harness 只把它当候选，不当配置。
     DIMENSIO_OUTBOUND_PROXY: outboundKnob(),
+    // 设置页填的内置厂商 key（加密存）：与 config.json、custom-providers 一样落在数据根下，
+    // 换版本 / 重启都还在（见 harness/server/provider-keys.ts）。租户实例各用各的，见 tenantDirs()。
+    // 服务端的 systemd 单元也带同名变量（scripts/server/install.sh）；这里显式传一遍，
+    // 老单元（没有那一行）也不会让管理员那份 key 落到程序目录里。
+    DIMENSIO_PROVIDER_KEYS_DIR: path.join(ROOT, 'dimensio', 'provider-keys'),
   }),
 });
 
@@ -226,6 +231,9 @@ function tenantDirs(user) {
     PROJECTS_ROOT: home,
     WORKSPACE_DIR: home,
     DIMENSIO_GLOBAL_GUIDE: path.join(d, 'GUIDE.md'),
+    // 设置页填的内置厂商 key（加密存）：各人各一份，实例闲置被回收后再拉起还是他自己的那把
+    // （见 harness/server/provider-keys.ts）。
+    DIMENSIO_PROVIDER_KEYS_DIR: path.join(d, 'provider-keys'),
   };
 }
 
@@ -262,6 +270,8 @@ function tenantEnv(user, port, token, { shell }) {
     PROJECTS_ROOT: dirs.PROJECTS_ROOT,
     WORKSPACE_DIR: dirs.WORKSPACE_DIR,
     DIMENSIO_GLOBAL_GUIDE: dirs.DIMENSIO_GLOBAL_GUIDE,
+    // 设置页填的内置厂商 key（加密存）：各人各一份（见 harness/server/provider-keys.ts）
+    DIMENSIO_PROVIDER_KEYS_DIR: dirs.DIMENSIO_PROVIDER_KEYS_DIR,
     // 租户模式（harness 侧的锁定见 harness/server/tenant.ts）：
     DIMENSIO_TENANT: '1',
     SANDBOX_ACCESS: 'workspace',

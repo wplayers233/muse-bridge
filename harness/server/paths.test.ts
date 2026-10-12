@@ -19,6 +19,7 @@ import {
   memoryRoot,
   projectsFile,
   projectsRoot,
+  providerKeysDir,
   quickFile,
   quickRoot,
   sessionsDir,
@@ -31,7 +32,7 @@ const pathsUrl = pathToFileURL(path.join(serverDir, "paths.ts")).href;
 
 const DATA_VARS = [
   "SESSIONS_DIR", "MEMORY_DIR", "KNOWLEDGE_DIR", "DIMENSIO_CONFIG_FILE", "DIMENSIO_QUICK_FILE", "DIMENSIO_QUICK_ROOT",
-  "PROJECTS_FILE", "PROJECTS_ROOT", "WORKSPACE_DIR", "DIMENSIO_GLOBAL_GUIDE", "HARNESS_ENV_FILE",
+  "PROJECTS_FILE", "PROJECTS_ROOT", "WORKSPACE_DIR", "DIMENSIO_GLOBAL_GUIDE", "HARNESS_ENV_FILE", "DIMENSIO_PROVIDER_KEYS_DIR",
 ] as const;
 
 const RESOLVERS: Record<string, () => string> = {
@@ -45,6 +46,7 @@ const RESOLVERS: Record<string, () => string> = {
   PROJECTS_ROOT: projectsRoot,
   WORKSPACE_DIR: defaultWorkspace,
   DIMENSIO_GLOBAL_GUIDE: globalGuideFile,
+  DIMENSIO_PROVIDER_KEYS_DIR: providerKeysDir,
 };
 
 function withEnv(vars: Record<string, string | undefined>, fn: () => void): void {
@@ -91,6 +93,7 @@ test("Q8 测试进程里：数据位置不在临时目录下就抛错——没�
     PROJECTS_ROOT: path.join(os.homedir(), "Dimensio Projects"),
     WORKSPACE_DIR: path.join(harnessRoot, "workspace"),
     DIMENSIO_GLOBAL_GUIDE: path.join(os.homedir(), ".dimensio", "GUIDE.md"),
+    DIMENSIO_PROVIDER_KEYS_DIR: path.join(harnessRoot, "provider-keys"),
   };
   for (const [name, resolve] of Object.entries(RESOLVERS)) {
     withEnv({ [name]: undefined }, () => {

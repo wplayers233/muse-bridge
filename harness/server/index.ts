@@ -100,6 +100,7 @@ import {
 } from "./quick.ts";
 import { Sandbox } from "./sandbox.ts";
 import { getConfig, setConfig, hasKey, sessionConfigSnapshot, forgetProvider, type ConfigPatch } from "./config.ts";
+import { providerKeysReady } from "./provider-keys.ts";
 import { allProviders } from "./catalog.ts";
 import { addCustomProvider, isCustomProviderId, removeCustomProvider, updateCustomProvider } from "./custom-providers.ts";
 import { shell, killAllJobs, listJobs, moveForegroundToBackground, stopJob } from "./tools/bash.ts";
@@ -265,9 +266,11 @@ app.post("/api/admin/retire/commit", (req, res) => {
 
 // ── Info + config ────────────────────────────────────────────────────────────
 
-app.get("/api/info", (_req, res) => {
+app.get("/api/info", async (_req, res) => {
   // 租户实例（多用户服务端上每个用户一个 harness，见 tenant.ts）关掉的 provider 不出现在目录里——选择器照目录渲染，
   // 不用另改前端；tenant 字段告诉前端藏掉访问范围开关、终端、连 Edge 这些入口。
+  // 内置厂商的 key 在加密存储里（provider-keys.ts）：等它读完再答，别先回一次假的「缺 Key」。
+  await providerKeysReady;
   const offProviders = disabledProviders();
   const catalog = allProviders().filter((p) => !offProviders.has(p.id));
   res.json({
@@ -290,7 +293,8 @@ app.get("/api/info", (_req, res) => {
   });
 });
 
-app.get("/api/config", (_req, res) => {
+app.get("/api/config", async (_req, res) => {
+  await providerKeysReady; // 设置页填的 key 从加密存储里读回来之后才答（见 provider-keys.ts）
   const cfg = getConfig();
   // accessLocked：访问范围被锁定（租户恒 workspace）——前端据此不摆「仅工作空间 / 整机」开关。
   res.json({ ...cfg, hasKey: hasKey(cfg.provider), accessLocked: accessLock() });
