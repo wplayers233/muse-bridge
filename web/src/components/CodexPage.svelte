@@ -130,10 +130,6 @@
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3.5 5.5h13M3.5 10h13M3.5 14.5h13"/></svg>
         </button>
       {/if}
-      <span class="cx-mark" aria-hidden="true">
-        <!-- Codex 官方 mark：圆 + 提示符（与 openai/codex 登录页的 .codex-mark 同几何） -->
-        <svg viewBox="0 0 32 32" fill="none"><path d="M22.356 19.797H17.17M9.662 12.29l1.979 3.576a.511.511 0 0 1-.005.504l-1.974 3.409M30.758 16c0 8.15-6.607 14.758-14.758 14.758-8.15 0-14.758-6.607-14.758-14.758C1.242 7.85 7.85 1.242 16 1.242c8.15 0 14.758 6.608 14.758 14.758Z" stroke="currentColor" stroke-linecap="round" stroke-width="2.484"/></svg>
-      </span>
       <span class="cx-word">Codex</span>
       {#if sideMode}<span class="cx-chip" class:ok={!!st && st.installed !== false && st.authed !== false}>{stateText}</span>{/if}
     </div>
@@ -187,12 +183,8 @@
 {/if}
 
 {#snippet drawerBody()}
-  <div class="cx-brand">
-    <span class="cx-mark" aria-hidden="true">
-      <svg viewBox="0 0 32 32" fill="none"><path d="M22.356 19.797H17.17M9.662 12.29l1.979 3.576a.511.511 0 0 1-.005.504l-1.974 3.409M30.758 16c0 8.15-6.607 14.758-14.758 14.758-8.15 0-14.758-6.607-14.758-14.758C1.242 7.85 7.85 1.242 16 1.242c8.15 0 14.758 6.608 14.758 14.758Z" stroke="currentColor" stroke-linecap="round" stroke-width="2.484"/></svg>
-    </span>
-    <span class="cx-word">Codex</span>
-  </div>
+  <!-- 品牌行：不用 Codex 圆标，「Codex」直接用 Claude 字标的衬线字体（Anthropic Serif 栈） -->
+  <div class="cx-brand"><span class="cx-word">Codex</span></div>
 
   {#if !single}
     <button class="d-item" onclick={() => { closeDrawer(); exit(); }}>
@@ -262,9 +254,8 @@
        不吃安全区时菜单 / 主题 / 关闭三个按钮被状态栏压住、点不到（ZCode 页同一处同样改）。 */
     padding: calc(var(--sat, 0px) + 8px) 10px 8px; }
   .cx-left, .cx-right { display: flex; align-items: center; gap: 6px; min-width: 0; }
-  .cx-mark { display: inline-flex; width: 22px; height: 22px; }
-  .cx-mark svg { width: 22px; height: 22px; }
-  .cx-word { font-size: 15px; letter-spacing: .02em; font-weight: 500; }
+  /* 品牌字用 Claude 字标同款衬线字体栈（Anthropic Serif），不带 Codex 圆标 */
+  .cx-word { font-family: var(--serif-stack, Georgia, serif); font-size: 16px; letter-spacing: .01em; font-weight: 500; }
   .cx-chip { font-size: 11px; padding: 3px 8px; border-radius: 999px; white-space: nowrap;
     border: 1px solid color-mix(in srgb, currentColor 18%, transparent); opacity: .7; }
   .cx-chip.ok { opacity: 1; }
