@@ -156,7 +156,6 @@
         install={st?.install || ''}
         login="codex login"
         docUrl={st?.docs || 'https://github.com/openai/codex'}
-        onCwdClick={() => { pickOpen = true; }}
         {hero} />
     </section>
     <!-- 工作台：终端 / 审阅 / 文件（作用域＝这个 agent 的工作目录）。侧列档是跟在对话后的

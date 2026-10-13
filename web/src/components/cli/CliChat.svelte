@@ -21,9 +21,8 @@
   import CliModelPicker from './CliModelPicker.svelte';
 
   // agent: 'codex' | 'zcode'；placeholder：输入栏提示语（各家官方口吻，外层给）；
-  // install/login/docUrl：接入卡上的命令与文档；hero：空态（外层给，含大问候）；
-  // onCwdClick：点了工作目录 chip（外层用来打开目录选择器；不给 = chip 纯展示）。
-  let { agent, placeholder = '', install = '', login = '', docUrl = '', hero = null, onCwdClick = null } = $props();
+  // install/login/docUrl：接入卡上的命令与文档；hero：空态（外层给，含大问候）。
+  let { agent, placeholder = '', install = '', login = '', docUrl = '', hero = null } = $props();
 
   const chat = $derived(cliChat[agent]);
   const st = $derived(statusOf(agent));
@@ -439,13 +438,6 @@
             <input type="file" bind:this={photoEl} accept="image/*" multiple hidden onchange={onPick} />
             <input type="file" bind:this={fileEl} multiple hidden onchange={onPick} />
           {/if}
-          {#if cwdOf(agent)}
-            <span class="cwd mono" class:click={onCwdClick} title={cwdOf(agent)}
-              role={onCwdClick ? 'button' : undefined} tabindex={onCwdClick ? 0 : undefined}
-              onclick={onCwdClick} onkeydown={(e) => { if (onCwdClick && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onCwdClick(); } }}>
-              {cwdOf(agent).split(/[\\/]/).filter(Boolean).pop()}
-            </span>
-          {/if}
           <span class="bspacer"></span>
           {#if agent === 'codex'}
             <CliModelPicker agent="codex" disabled={chat.busy || !ready} />
@@ -604,9 +596,6 @@
   .box:has(.ta:disabled) { opacity: .5; }
   /* 控制条：左 +/工作目录、右模型胶囊 + 圆形发送钮（官方 PC 端同构，条高 44px） */
   .bar { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 6px 2px 6px; }
-  .cwd { font-size: 11.5px; color: var(--faint, #8a8a86); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 45%; }
-  .cwd.click { cursor: pointer; }
-  @media (hover: hover) { .cwd.click:hover { color: var(--text, #eee); background: color-mix(in srgb, currentColor 6%, transparent); } }
   .bspacer { flex: 1; }
   /* 圆形发送钮（官方 PC 端同款，accent 随各家：Codex 绿 / ZCode 蓝） */
   .send { flex: none; width: 34px; height: 34px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
