@@ -30,6 +30,7 @@ import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs } from '../runtime/
 import { listCliSessions, getCliSession, saveCliSession, deleteCliSession } from '../runtime/cli-sessions.mjs';
 import { cliSpawnKeyEnv, cliDataEnv, keyDirFor, setAgentKey, agentKeyState, isKeyAgent } from '../runtime/agent-keys.mjs';
 import { codexModels } from '../runtime/agent-models.mjs';
+import { readInstalledPlugins, scanCatalog, codexMcpList, codexPluginAdd, codexPluginRemove } from '../runtime/agent-plugins-codex.mjs';
 import { codexPlan } from '../runtime/agent-plan-codex.mjs';
 import { zcodePlan } from '../runtime/agent-plan-zcode.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -299,6 +300,46 @@ export function registerAgentCliRoutes(router, { identify }) {
       store: { path: path.join(ctx.dataDir || '.', 'codex-models-union.json') },
     });
     json(res, 200, { ok: true, models });
+  });
+
+  // —— Codex 插件 / 连接器（官方 PC 端 `codex plugin` / `codex mcp` 的桥接，「自定义」页数据面）——
+  router.on('GET', '/api/codex/plugins', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    const env = { ...process.env, ...cliDataEnv(ctx), ...cliSpawnKeyEnv(ctx, 'codex') };
+    const [installed, catalog, mcp] = await Promise.all([
+      Promise.resolve(readInstalledPlugins(env)),
+      Promise.resolve(scanCatalog(env)),
+      codexMcpList({ env }),
+    ]);
+    json(res, 200, { ok: true, installed, catalog, mcp });
+  });
+
+  router.on('POST', '/api/codex/plugins/add', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const selector = String(body?.selector || '');
+    if (!selector) return json(res, 400, { error: '需要 selector（PLUGIN@MARKETPLACE）' });
+    const env = { ...process.env, ...cliDataEnv(ctx), ...cliSpawnKeyEnv(ctx, 'codex') };
+    const r = await codexPluginAdd({ env, selector });
+    json(res, r.ok ? 200 : 500, r.ok ? { ok: true } : { error: r.error || '安装失败' });
+  });
+
+  router.on('POST', '/api/codex/plugins/remove', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const selector = String(body?.selector || '');
+    if (!selector) return json(res, 400, { error: '需要 selector（PLUGIN@MARKETPLACE）' });
+    const env = { ...process.env, ...cliDataEnv(ctx), ...cliSpawnKeyEnv(ctx, 'codex') };
+    const r = await codexPluginRemove({ env, selector });
+    json(res, r.ok ? 200 : 500, r.ok ? { ok: true } : { error: r.error || '移除失败' });
   });
 
   // 记住选定的模型 / 思考深度。传空串 = 清掉，交回 CLI 自己的配置（~/.codex/config.toml）。

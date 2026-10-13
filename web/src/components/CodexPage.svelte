@@ -8,6 +8,7 @@
   import { onMount, untrack } from 'svelte';
   import CliChat from './cli/CliChat.svelte';
   import CliDock from './dock/CliDock.svelte';
+  import CodexCustomizePage from './cli/CodexCustomizePage.svelte';
   import AccountCard from './AccountCard.svelte';
   import { cliChat, cliNew, cliPick, cliDrop, cliSessions, cliActiveId, cliStatus, loadCliStatus, statusOf, cwdOf, setCliCwd,
     loadCliModels, syncSessions } from '../lib/cliChat.svelte.js';
@@ -34,6 +35,7 @@
   // 换目录入口在输入框的工作目录 chip（点击打开选择器）——侧栏保持 Claude 同款极简。
   const cwd = $derived(cwdOf('codex'));
   let pickOpen = $state(false);
+  let customizeOpen = $state(false);
 
   // —— 三档形态（断点单源 lib/layout.svelte.js，与 Claude 页同一套）——
   //   expanded ≥1100：侧栏恒常驻左列
@@ -182,6 +184,11 @@
     onClose={() => (pickOpen = false)} />
 {/if}
 
+<!-- Codex 自定义（官方 plugin / mcp 的桥接页） -->
+{#if customizeOpen}
+  <CodexCustomizePage onClose={() => (customizeOpen = false)} />
+{/if}
+
 {#snippet drawerBody()}
   <!-- 品牌行：不用 Codex 圆标，「Codex」直接用 Claude 字标的衬线字体（Anthropic Serif 栈） -->
   <div class="cx-brand"><span class="cx-word">Codex</span></div>
@@ -197,6 +204,10 @@
   <!-- 接入设置 / 凭据 / 工作台三组已从侧栏移除（对齐 Claude 的极简结构）：
        状态看页头 chip 与空态引导，模型/思考深度在输入框胶囊里选，凭据走「设置 → Agent」，
        工作台入口在页头的工作台按钮，换工作目录在下方「项目」行 / 输入框 cwd chip。 -->
+  <button class="d-item" onclick={() => { customizeOpen = true; closeDrawer(); }} class:cur={customizeOpen}
+    aria-current={customizeOpen ? 'page' : undefined}>
+    <span class="d-lead" aria-hidden="true"><span class="d-bag">&#xe100;</span></span>{t('自定义')}
+  </button>
   <div class="d-sec">{t('会话')}</div>
   <div class="d-list">
     {#each sessions as s (s.id)}
@@ -309,6 +320,7 @@
   .d-item:active { background: color-mix(in srgb, currentColor 10%, transparent); }
   .d-lead { width: 22px; height: 20px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
   .d-lead svg { width: 17px; height: 17px; }
+  .d-bag { font-family: var(--icons, inherit); font-size: 17px; line-height: 1; }
   /* 折叠组的 chevron：贴行尾，展开时转 180° */
   .d-sec { font-size: 12px; opacity: .55; padding: 14px 4px 4px 10px; }
   .d-list { display: flex; flex-direction: column; }

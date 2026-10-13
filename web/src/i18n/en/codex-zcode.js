@@ -191,6 +191,12 @@ export default {
   // —— 账户菜单里的 coding plan 余额行（UserMenu，按所在页显示对应那家）——
   '余额 {b}': 'Balance {b}',
 
+  // —— Codex「自定义」页（官方 PC 端 plugin/mcp 的桥接，CodexCustomizePage）——
+  '未安装': 'Not installed',
+  '安装中…': 'Installing…',
+  '移除中…': 'Removing…',
+  '插件目录是空的': 'The plugin catalog is empty',
+
   // —— 输入框照官方 PC 端：+ 弹层菜单 / 模型一体浮层（CliAddMenu / CliModelPicker）——
   '添加图片': 'Add image',
   '添加文件': 'Add files',
