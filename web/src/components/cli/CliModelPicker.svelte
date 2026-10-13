@@ -195,6 +195,8 @@ void main() {
 `;
   const FRAG = `#version 300 es
 precision highp float;
+// bridge tweak: no distance falloff / no diagonal wavefront - the whole track glows uniformly
+// (user spec: no skew, no perspective, no partial reveal; bursts pulse in time only)
 uniform vec2 u_resolution;
 uniform float u_time;
 uniform vec3 u_fg;
@@ -265,8 +267,7 @@ void main() {
     float age = u_time - u_burstTime[i];
     if (age < 0.0 || age > MAX_AGE) continue;
     float k = clamp(u_burstGain[i], 0.0, 1.0);
-    vec2 originCell = floor(u_burstCenter[i] / pitch);
-    float manh = abs(cell.x - originCell.x) + abs(cell.y - originCell.y);
+    float manh = 0.0;
     float range   = mix(RANGE_LO, RANGE_HI, k);
     float falloff = exp(-manh / (range * 0.85));
     float reach   = exp(-max(manh - range, 0.0) * 0.12);
