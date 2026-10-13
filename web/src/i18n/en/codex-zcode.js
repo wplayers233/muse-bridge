@@ -192,9 +192,17 @@ export default {
   '余额 {b}': 'Balance {b}',
 
   // —— 输入框照官方 PC 端：+ 弹层菜单 / 模型一体浮层（CliAddMenu / CliModelPicker）——
-  '添加图片': 'Add photos',
+  '添加图片': 'Add image',
   '添加文件': 'Add files',
   '添加附件': 'Add attachments',
-  '选择模型': 'Choose a model',
+  '选择模型': 'Select model',
   '‹ 返回': '‹ Back',
+  // 思考深度档位（effort 滑杆上的中文名；GLOSSARY §630：effort 选择器不复用
+  // 游戏画质档的 t('极高')/t('最高')，所以 xhigh=超高、ultra=极致；未知档位回退显示原 id）
+  '低': 'Low',
+  '中': 'Medium',
+  '高': 'High',
+  '超高': 'Extra high',
+  '最大': 'Max',
+  '极致': 'Ultra',
   };

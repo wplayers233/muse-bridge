@@ -26,6 +26,61 @@
   // 思考深度档以【选中的模型】自己报的为准（各模型能给的档不一样）。
   const efforts = $derived(picked?.efforts || []);
 
+  // —— effort 档位中文名（官方 PC 端滑杆同款）：字面量 switch（i18n-check 要求键可静态查）；
+  // 未知档位回退显示原 id。——
+  function effortName(v) {
+    switch (v) {
+      case 'low': return t('低');
+      case 'medium': return t('中');
+      case 'high': return t('高');
+      case 'xhigh': return t('超高');
+      case 'max': return t('最大');
+      case 'ultra': return t('极致');
+      default: return v;
+    }
+  }
+  // 当前生效档位在 efforts 里的位置：''（默认）时视觉停在模型默认档（没有就第 0 档）。
+  const restIdx = $derived.by(() => {
+    if (curEffort !== '') {
+      const i = efforts.indexOf(curEffort);
+      if (i >= 0) return i;
+    }
+    const d = efforts.indexOf(picked?.defaultEffort);
+    return d >= 0 ? d : 0;
+  });
+
+  // —— 滑杆交互（照官方 PC 端：点轨道/拖动吸附到最近档，松手提交）——
+  let dragIdx = $state(-1);      // -1 = 没在拖，视觉用 restIdx
+  let trackEl = $state(null);
+  const showIdx = $derived(dragIdx >= 0 ? dragIdx : restIdx);
+  function idxFromEvent(e) {
+    const el = trackEl;
+    if (!el || !efforts.length) return 0;
+    const r = el.getBoundingClientRect();
+    const pct = Math.min(1, Math.max(0, (e.clientX - r.left) / Math.max(1, r.width)));
+    return Math.round(pct * (efforts.length - 1));
+  }
+  function trackDown(e) {
+    if (busy || !efforts.length) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    dragIdx = idxFromEvent(e);
+  }
+  function trackMove(e) {
+    if (dragIdx < 0 || busy) return;
+    dragIdx = idxFromEvent(e);
+  }
+  function trackUp() {
+    if (dragIdx < 0) return;
+    const v = efforts[dragIdx];
+    dragIdx = -1;
+    if (v != null && v !== curEffort) pickEffort(v);
+  }
+  function trackKey(e) {
+    if (busy || !efforts.length) return;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); pickEffort(efforts[Math.max(0, showIdx - 1)]); }
+    else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); pickEffort(efforts[Math.min(efforts.length - 1, showIdx + 1)]); }
+  }
+
   function toggle() {
     if (disabled) return;
     if (!open && pillBtn) {
@@ -71,7 +126,7 @@
   <button class="pill" bind:this={pillBtn} onclick={toggle} disabled={disabled}
     class:on={open} aria-label={t('选择模型')} title={t('选择模型')}>
     <span class="plabel">{pillLabel}</span>
-    {#if curModel && curEffort !== ''}<span class="peffort">{curEffort}</span>{/if}
+    {#if curModel && curEffort !== ''}<span class="peffort">{effortName(curEffort)}</span>{/if}
     <svg class="chev" class:flip={open} viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m5.5 8 4.5 4.5L14.5 8"/></svg>
   </button>
   {#if open}
@@ -93,18 +148,40 @@
           </button>
         {/each}
       {:else}
-        <button class="back" onclick={() => (view = 'models')} disabled={busy}>{t('‹ 返回')}</button>
-        <div class="ptitle">{picked?.label || curModel} · {t('思考深度')}</div>
-        <button class="row" onclick={() => pickEffort('')} disabled={busy}>
-          <span class="rname">{t('默认')}</span>
-          {#if curEffort === ''}<span class="check">✓</span>{/if}
-        </button>
-        {#each efforts as v (v)}
-          <button class="row" onclick={() => pickEffort(v)} disabled={busy}>
-            <span class="rname">{v}</span>
-            {#if curEffort === v}<span class="check accent">✓</span>{/if}
+        <!-- effort 二级视图照官方 PC 端：大标题=当前档名，副标题=模型名（点击返回），
+             右上 ↻ 复位「默认」，下方一条分档滑杆（点轨道/拖动吸附，松手提交）。 -->
+        <div class="ehead">
+          <button class="preset" onclick={() => pickEffort('')} disabled={busy} aria-label={t('默认')} title={t('默认')}>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a6 6 0 1 1 1.8 4.3M4 10V6.5M4 10h3.5"/></svg>
           </button>
-        {/each}
+          <div class="etitle" class:backable={view === 'effort'} role="button" tabindex="0"
+            onclick={() => (view = 'models')} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); view = 'models'; } }}>
+            <span class="ename">{curEffort === '' ? t('默认') : effortName(efforts[showIdx] ?? curEffort)}</span>
+            <span class="emodel">{picked?.label || curModel} ›</span>
+          </div>
+        </div>
+        {#if efforts.length >= 2}
+          <div class="slider" bind:this={trackEl} role="slider" tabindex="0" aria-valuemin="0" aria-valuemax={efforts.length - 1}
+            aria-valuenow={showIdx} aria-valuetext={curEffort === '' && dragIdx < 0 ? t('默认') : effortName(efforts[showIdx])}
+            onpointerdown={trackDown} onpointermove={trackMove} onpointerup={trackUp} onpointercancel={trackUp}
+            onkeydown={trackKey}>
+            <div class="strack">
+              <div class="sfill" style:width={(efforts.length > 1 ? (showIdx / (efforts.length - 1)) * 100 : 100) + '%'}></div>
+              {#each efforts as v, i (v)}
+                <span class="sdot" class:on={i <= showIdx} style:left={(efforts.length > 1 ? (i / (efforts.length - 1)) * 100 : 50) + '%'}></span>
+              {/each}
+              <span class="sthumb" style:left={(efforts.length > 1 ? (showIdx / (efforts.length - 1)) * 100 : 50) + '%'}></span>
+            </div>
+            <div class="slabels">
+              {#each efforts as v (v)}<span class="slabel" class:on={v === (dragIdx >= 0 ? efforts[showIdx] : curEffort)}>{effortName(v)}</span>{/each}
+            </div>
+          </div>
+        {:else if efforts.length === 1}
+          <button class="row" onclick={() => pickEffort(efforts[0])} disabled={busy}>
+            <span class="rname">{effortName(efforts[0])}</span>
+            {#if curEffort === efforts[0]}<span class="check accent">✓</span>{/if}
+          </button>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -142,6 +219,31 @@
   .check { margin-left: auto; flex: none; font-size: 13px; }
   .check.accent { color: var(--agent-accent, currentColor); }
   .div { height: 1px; background: color-mix(in srgb, currentColor 12%, transparent); margin: 4px 8px; }
-  .back { padding: 6px 10px; font-size: 12.5px; color: inherit; opacity: .7; text-align: left; }
-  .ptitle { padding: 2px 10px 6px; font-size: 12px; opacity: .65; }
+
+  /* —— effort 二级视图（官方 PC 端滑杆同款）—— */
+  .ehead { position: relative; display: flex; align-items: center; justify-content: center; padding: 10px 12px 4px; min-height: 34px; }
+  .preset { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center; color: inherit; opacity: .55; }
+  .preset svg { width: 15px; height: 15px; }
+  @media (hover: hover) { .preset:hover { opacity: 1; background: color-mix(in srgb, currentColor 8%, transparent); } }
+  .etitle { display: flex; flex-direction: column; align-items: center; gap: 1px; cursor: default; border-radius: 8px; padding: 2px 10px; }
+  .ename { font-size: 15px; font-weight: 600; color: var(--agent-accent, currentColor); }
+  .emodel { font-size: 11.5px; opacity: .6; }
+  .etitle.backable { cursor: pointer; }
+  .etitle.backable:hover .emodel { opacity: 1; text-decoration: underline; text-underline-offset: 2px; }
+  .slider { padding: 10px 18px 12px; outline: none; touch-action: none; user-select: none; }
+  .slider:focus-visible .sthumb { box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent-accent, currentColor) 35%, transparent); }
+  .strack { position: relative; height: 6px; border-radius: 999px;
+    background: color-mix(in srgb, currentColor 12%, transparent); }
+  .sfill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px;
+    background: var(--agent-accent, currentColor); }
+  .sdot { position: absolute; top: 50%; width: 6px; height: 6px; border-radius: 50%; transform: translate(-50%, -50%);
+    background: color-mix(in srgb, currentColor 45%, transparent); }
+  .sdot.on { background: var(--agent-accent, currentColor); }
+  .sthumb { position: absolute; top: 50%; width: 18px; height: 18px; border-radius: 50%;
+    transform: translate(-50%, -50%); background: var(--agent-accent, currentColor);
+    box-shadow: 0 1px 4px rgba(0,0,0,.3); transition: left .12s ease; pointer-events: none; }
+  .slabels { display: flex; justify-content: space-between; margin-top: 7px; }
+  .slabel { font-size: 10.5px; opacity: .55; }
+  .slabel.on { opacity: 1; font-weight: 600; color: var(--agent-accent, currentColor); }
 </style>

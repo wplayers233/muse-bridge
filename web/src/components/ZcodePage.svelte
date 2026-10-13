@@ -277,7 +277,6 @@
       <svg viewBox="0 0 256 218" fill="currentColor"><path d="M249.6 0.13L116.48 25.6022C113.665 29.5699 109.054 32.0019 104.064 32.0019H6.3999V0H249.6Z"/><path d="M249.6 0.13L102.401 217.732H0L153.599 0.13H249.6Z"/><path d="M121.601 217.732L139.65 192.134C142.465 188.166 147.076 185.734 152.067 185.734H249.604V217.736H121.601V217.732Z"/></svg>
     </span>
     <h1>{greet}</h1>
-    {#if cwd}<div class="zc-hello-cwd hero-sub">{cwd}</div>{/if}
   </div>
 {/snippet}
 
@@ -345,7 +344,6 @@
   .zc-hello-mark svg { width: 64px; height: 64px; }
   /* 问候照 dimensio 用展示衬线 */
   .zc-hello h1 { font-family: var(--serif-stack, Georgia, serif); font-size: 24px; font-weight: 400; letter-spacing: .01em; line-height: 1.2; text-align: center; }
-  .zc-hello-cwd { font-size: 11.5px; color: var(--faint); word-break: break-all; text-align: center; }
 
   /* —— 抽屉（骨架照 Claude 页；配色走 ZCode 自己的 token）—— */
   .zc-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0; visibility: hidden;

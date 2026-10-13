@@ -343,7 +343,6 @@
       <svg viewBox="0 0 32 32" fill="none"><path d="M22.356 19.797H17.17M9.662 12.29l1.979 3.576a.511.511 0 0 1-.005.504l-1.974 3.409M30.758 16c0 8.15-6.607 14.758-14.758 14.758-8.15 0-14.758-6.607-14.758-14.758C1.242 7.85 7.85 1.242 16 1.242c8.15 0 14.758 6.608 14.758 14.758Z" stroke="currentColor" stroke-linecap="round" stroke-width="2.484"/></svg>
     </span>
     <h1>{greet}</h1>
-    {#if cwd}<div class="cx-hello-cwd hero-sub">{cwd}</div>{/if}
   </div>
 {/snippet}
 
@@ -408,7 +407,6 @@
   .cx-hello-mark svg { width: 64px; height: 64px; }
   /* 问候保留 Codex 的终端等宽基因（官方 TUI 的识别点），字号对齐 dimensio 空态档 */
   .cx-hello h1 { font-family: var(--mono, ui-monospace, monospace); font-weight: 400; font-size: 22px; line-height: 1.2; text-align: center; letter-spacing: .02em; }
-  .cx-hello-cwd { font-size: 11.5px; opacity: .55; word-break: break-all; text-align: center; }
 
   .cx-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0; visibility: hidden;
     transition: opacity .25s ease, visibility .25s; z-index: 40; }
