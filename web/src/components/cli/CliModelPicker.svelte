@@ -638,21 +638,21 @@ void main() {
     --es-slider-handle: rgb(165, 164, 154);
     --es-slider-handle-energized: color-mix(in srgb, var(--agent-accent, currentColor) 25%, #fff);
     --es-thumb-shadow: 0 0 12px rgba(11, 11, 11, .24);
-    --es-energy-hot: var(--agent-accent, currentColor);
+    --es-energy-hot: color-mix(in srgb, var(--agent-accent, currentColor) 45%, #fff);
     --es-energy-cool: rgb(255, 255, 255);
-    --es-energy-charged-start: color-mix(in srgb, var(--agent-accent, currentColor) 70%, #fff);
-    --es-energy-charged-end: color-mix(in srgb, var(--agent-accent, currentColor) 60%, #000);
+    --es-energy-charged-start: color-mix(in srgb, var(--agent-accent, currentColor) 50%, #fff);
+    --es-energy-charged-end: var(--agent-accent, currentColor);
     --es-energy-tint-blue: transparent;
     --es-energy-tint-pink: transparent;
     --es-energy-bed-fill: 0;
     --es-energy-charge-max: .85;
     --es-energy-charge-ramp: 1.1;
-    --es-energy-ink-floor: .08;
-    --es-energy-ink-ceil: .85;
-    --es-energy-gain: 1;
+    --es-energy-ink-floor: .12;
+    --es-energy-ink-ceil: .95;
+    --es-energy-gain: 1.2;
     --es-energy-reveal: 60%;
-    --es-energy-op-k: .86;      /* 暗：opacity clamp 系数与上限（官方 dark 变体） */
-    --es-energy-op-max: 65%;
+    --es-energy-op-k: 1.15;     /* 暗：opacity clamp 系数与上限（accent 明度低于官方紫，放宽才可见） */
+    --es-energy-op-max: 85%;
   }
   :global(html[data-theme="light"]) .pk {
     --es-pop-shadow: 0 0 0 1px rgba(11, 11, 11, .06), 0 6px 16px rgba(11, 11, 11, .06);
@@ -664,15 +664,16 @@ void main() {
     --es-slider-handle: #fff;
     --es-slider-handle-energized: #fff;
     --es-thumb-shadow: 0 0 0 1px rgba(11, 11, 11, .04), 0 0 12px rgba(11, 11, 11, .06);
+    --es-energy-hot: color-mix(in srgb, var(--agent-accent, currentColor) 45%, #fff);
     --es-energy-cool: rgb(210, 196, 240);
     --es-energy-bed-fill: 1;
     --es-energy-charge-max: .92;
     --es-energy-charge-ramp: .5;
     --es-energy-ink-floor: .28;
     --es-energy-ink-ceil: 1;
-    --es-energy-gain: 1.18;
+    --es-energy-gain: 1.35;
     --es-energy-reveal: 45%;
-    --es-energy-op-k: 1.33;
+    --es-energy-op-k: 1.5;
     --es-energy-op-max: 100%;
   }
 
