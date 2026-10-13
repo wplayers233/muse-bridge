@@ -15,10 +15,27 @@
 // OPENAI_API_KEY 这类厂商变量（运维在 unit 文件里配的做法照旧可用）。
 import path from 'node:path';
 import { readSecrets, writeSecrets } from '../extension-secrets.mjs';
-import { ROOT } from '../config/index.mjs';
+import { ROOT, FEATURES } from '../config/index.mjs';
 import { AGENT_BY_ID } from '../config/agents.mjs';
 
 export const AGENT_KEYS_DIR = path.join(ROOT, 'agents');
+
+// 每身份的 key 存放目录。<dataDir>/agents/：admin 的 dataDir 就是 ROOT（= 全局那把，零迁移，
+// 降级为 admin 个人 key）；user 的 dataDir 是 <userRoot>/.bridge——各人各一把，互不可见。
+export const keyDirFor = (ctx) => path.join((ctx && ctx.dataDir) || ROOT, 'agents');
+
+// 每身份的 CLI 数据目录（登录态/会话/配置一次全隔离）。只对注册用户设——admin 不设 =
+// 继承宿主（~/.codex、~/.zcode），单机单人时的行为与从前完全一样，这是向后兼容的关键。
+//   codex：CODEX_HOME（官方认它：auth.json、config.toml、threads 全在里面）
+//   zcode：ZCODE_DATA_BASE_DIR（凭据落 <base>/.zcode/v2/credentials.json，与 agent-status 探测一致；
+//          给某用户开通 = 管理员在服务器上跑 `ZCODE_DATA_BASE_DIR=<userRoot>/.bridge/cli zcode login`）
+export function cliDataEnv(ctx) {
+  if (!ctx || ctx.kind !== 'user' || !ctx.dataDir) return {};
+  return {
+    CODEX_HOME: path.join(ctx.dataDir, 'cli', 'codex'),
+    ZCODE_DATA_BASE_DIR: path.join(ctx.dataDir, 'cli'),
+  };
+}
 
 // 厂商各自认的环境变量名（第一个是主名 = 表里的 keyEnv，其余是这家 CLI 也读的别名）。
 //
@@ -38,16 +55,16 @@ export function isKeyAgent(id) { return KEY_AGENTS.includes(id); }
 
 // 读盘（解不开 / 没存过都当「没有」，绝不因为读不了盘就让分页起不来）。整表读一次，进程内不缓存
 // ——密文只有几百字节，而 extension-secrets 内部已按文件 mtime + 数据密钥做了缓存。
-function readKeys() {
-  try { return readSecrets(AGENT_KEYS_DIR); } catch (e) {
+function readKeys(dir = AGENT_KEYS_DIR) {
+  try { return readSecrets(dir); } catch (e) {
     console.warn('[agent-keys] 读凭据失败：', (e && e.message) || e);
     return {};
   }
 }
 
-// 存着的那把（没有 = ''）。
-export function savedAgentKey(id) {
-  const rec = readKeys()[id];
+// 存着的那把（没有 = ''）。dir = 存放目录（默认全局 = admin 那份；user 传各自的）。
+export function savedAgentKey(id, dir = AGENT_KEYS_DIR) {
+  const rec = readKeys(dir)[id];
   const k = rec && rec.headers && rec.headers.apiKey;
   return typeof k === 'string' ? k : '';
 }
@@ -59,8 +76,8 @@ export function envAgentKey(id, env = process.env) {
 }
 
 // 这把 key 现在算不算有：存的那把优先，其次 env。
-export function agentKeyState(id, env = process.env) {
-  const stored = savedAgentKey(id);
+export function agentKeyState(id, env = process.env, dir = AGENT_KEYS_DIR) {
+  const stored = savedAgentKey(id, dir);
   if (stored) return { id, source: 'store', env: (AGENT_BY_ID[id] || {}).keyEnv || '', tail: stored.slice(-4), has: true };
   const e = envAgentKey(id, env);
   if (e) return { id, source: 'env', env: e.name, tail: e.value.slice(-4), has: true };
@@ -69,15 +86,25 @@ export function agentKeyState(id, env = process.env) {
 
 // 跑一轮时注进子进程 env 的那几个变量。存的那把压过 env（见文件头）；没存过就返回 {}，
 // 让 CLI 直接继承进程环境（`codex login` / `zcode login` 的登录态照旧可用）。
-export function cliKeyEnv(id) {
-  const stored = savedAgentKey(id);
+export function cliKeyEnv(id, dir = AGENT_KEYS_DIR) {
+  const stored = savedAgentKey(id, dir);
   if (!stored) return {};
   const name = (AGENT_BY_ID[id] || {}).keyEnv || (ENV_NAMES[id] || [])[0];
   return name ? { [name]: stored } : {};
 }
 
-// 存 / 清（管理员面调用）。key 为空 = 清掉这一家的凭据。
-export function setAgentKey(id, key) {
+// 每身份的 key 注入（路由层用）：自己的那把优先；没有且开了 cliKeyShare 才回落全局
+// （管理员那把是计费 key，默认不摊给用户）。admin 走默认目录 = 全局那把，行为不变。
+export function cliSpawnKeyEnv(ctx, agent) {
+  const dir = keyDirFor(ctx);
+  const own = savedAgentKey(agent, dir);
+  if (own) return cliKeyEnv(agent, dir);
+  if (ctx && ctx.kind === 'user' && FEATURES.cliKeyShare) return cliKeyEnv(agent);
+  return {};
+}
+
+// 存 / 清（管理面或本人调用）。key 为空 = 清掉这一家的凭据。
+export function setAgentKey(id, key, dir = AGENT_KEYS_DIR) {
   if (!isKeyAgent(id)) {
     return {
       error: id === 'zcode'
@@ -86,15 +113,15 @@ export function setAgentKey(id, key) {
     };
   }
   const value = String(key || '').trim();
-  const map = readKeys();
+  const map = readKeys(dir);
   const next = { ...map };
   if (!value) delete next[id];
   else next[id] = { headers: { apiKey: value } };
-  try { writeSecrets(AGENT_KEYS_DIR, next); } catch (e) { return { error: (e && e.message) || String(e) }; }
+  try { writeSecrets(dir, next); } catch (e) { return { error: (e && e.message) || String(e) }; }
   return { ok: true, id, has: !!value, tail: value ? value.slice(-4) : '' };
 }
 
 // 给管理面（设置 → Agent）的视图：只给尾 4 位，不外泄整把 key。
-export function agentKeyList(env = process.env) {
-  return KEY_AGENTS.map((id) => ({ ...agentKeyState(id, env), label: (AGENT_BY_ID[id] || {}).label || id }));
+export function agentKeyList(env = process.env, dir = AGENT_KEYS_DIR) {
+  return KEY_AGENTS.map((id) => ({ ...agentKeyState(id, env, dir), label: (AGENT_BY_ID[id] || {}).label || id }));
 }

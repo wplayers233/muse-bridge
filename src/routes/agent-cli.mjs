@@ -11,6 +11,8 @@
 //   GET  /api/cli/sessions/one  ?agent=&id= 取一条完整快照（跨设备点开侧栏某条）
 //   POST /api/cli/sessions/save { agent, id?, sessionId, cwd, title?, messages? } → { ok, id }
 //   POST /api/cli/sessions/delete { agent, id } → { ok }（幂等）
+//   GET  /api/cli/agent-key     ?agent= 我自己的凭据状态（尾 4 位）
+//   POST /api/cli/agent-key     { agent, key } → 存 / 清我自己的 key（<dataDir>/agents/）
 //
 // 门禁：requireCtx（admin / user，share 与未登录 401）＋ 该身份的 agent 名单（ctx.allowCodex /
 // ctx.allowZcode——全局开关 ∩ 按人授权）。这两个 agent 目前 multiUser:false，所以实际只有管理员过。
@@ -25,6 +27,7 @@ import { CLI_AGENTS, CLI_MISSING_NOTE, runCliTurn } from '../runtime/agent-cli.m
 import { runAppServerTurn, appServerAvailable } from '../runtime/agent-appserver.mjs';
 import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs } from '../runtime/cli-cwd.mjs';
 import { listCliSessions, getCliSession, saveCliSession, deleteCliSession } from '../runtime/cli-sessions.mjs';
+import { cliSpawnKeyEnv, cliDataEnv, keyDirFor, setAgentKey, agentKeyState, isKeyAgent } from '../runtime/agent-keys.mjs';
 import { codexModels } from '../runtime/agent-models.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -112,7 +115,11 @@ export function registerAgentCliRoutes(router, { identify }) {
     try { refresh = new URL(req.url, 'http://x').searchParams.get('refresh') === '1'; } catch {}
     if (refresh) refreshAgentProbes();
     const cwds = cliCwdMap(ctx);
-    const list = agentStatusList().map((a) => ({
+    // user 的凭据是各人自己的（key 在 <dataDir>/agents，codex 登录态在 <dataDir>/cli/codex），
+    // 状态要按身份探：传 env + keyDir 让 codexAuthed / agentKeyState 看各自的那份（不走全局缓存）。
+    const isUser = ctx.kind === 'user';
+    const perIdentity = isUser ? { env: { ...process.env, ...cliDataEnv(ctx) }, keyDir: keyDirFor(ctx) } : {};
+    const list = agentStatusList(perIdentity).map((a) => ({
       id: a.id, label: a.label, installed: a.installed, authed: a.authed, enabled: a.enabled,
       allowed: a.id === 'claude' ? ctx.allowClaude : a.id === 'dimensio' ? ctx.allowDimensio : allow(ctx, a.id),
       note: a.note,
@@ -127,6 +134,16 @@ export function registerAgentCliRoutes(router, { identify }) {
       model: a.id === 'codex' ? getCliPrefs(ctx, 'codex').model : '',
       effort: a.id === 'codex' ? getCliPrefs(ctx, 'codex').effort : '',
     }));
+    // user 的 zcode 登录是运营操作（网页上点不了，官方浏览器授权要在服务器上跑）：
+    // 没登录时把「管理员怎么给你开」写进提示，别让人对着「还没配认证」发呆。
+    if (isUser) {
+      for (const a of list) {
+        if (a.id === 'zcode' && !a.authed && a.installed) {
+          a.note = '还没登录：让管理员在这台服务器上跑一次 `ZCODE_DATA_BASE_DIR='
+            + path.join(ctx.dataDir, 'cli') + ' zcode login`（浏览器授权，逐用户一次）';
+        }
+      }
+    }
     json(res, 200, { ok: true, agents: list });
   });
 
@@ -172,13 +189,18 @@ export function registerAgentCliRoutes(router, { identify }) {
       try {
         // codex 有 app-server 就走新路：审批、会话托管、流式正文、图片附件（localImage）全在里面。
         // 老版本没有这个子命令就回落 exec（老路还能用，只是没有审批卡）。
+        // env/keyEnv：每身份注入——user 用自己的 key（<dataDir>/agents）+ 自己的 CLI 数据目录
+        // （CODEX_HOME / ZCODE_DATA_BASE_DIR，见 runtime/agent-keys.mjs）；admin 不设目录 = 继承宿主。
+        const spawnEnv = { ...process.env, ...cliDataEnv(ctx) };
+        const keyEnv = cliSpawnKeyEnv(ctx, agent);
         const useAppServer = agent === 'codex' && await appServerAvailable();
         const stream = useAppServer
           ? runAppServerTurn(agent, {
             prompt, images, threadId: sessionId, cwd, model: prefs.model, effort: prefs.effort, signal: ac.signal,
+            env: spawnEnv, keyEnv,
             onServerRequest: (method, params, approvalId) => waitForApproval(turnKey, approvalId),
           })
-          : runCliTurn(agent, { prompt, sessionId, cwd, model: prefs.model, effort: prefs.effort, images, signal: ac.signal });
+          : runCliTurn(agent, { prompt, sessionId, cwd, model: prefs.model, effort: prefs.effort, images, signal: ac.signal, env: spawnEnv, keyEnv });
         for await (const ev of stream) {
           if (gone) break;
           // 审批卡的 id 加上这一轮的前缀：同名 id 在不同轮之间不会撞（app-server 内部从 1 开始数）。
@@ -328,5 +350,35 @@ export function registerAgentCliRoutes(router, { identify }) {
     } catch (e) {
       json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) });
     }
+  });
+
+  // ── 注册用户自己的 key（<dataDir>/agents/，与 admin 的全局那份分开存） ─────────
+  // admin 的 dataDir 就是 ROOT，所以他在「设置 → Agent」里存的那把天然落在全局目录、
+  // 行为与从前完全一样；用户在这里填的是自己的（各人各一把，互不可见）。
+  // 只有 codex 有 key 口子（zcode 只认官方登录，见 runtime/agent-keys.mjs 的说明）。
+  router.on('GET', '/api/cli/agent-key', (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    const agent = agentOf(req);
+    if (!CLI_AGENTS.includes(agent)) return json(res, 400, { error: '未知 agent' });
+    if (!allow(ctx, agent)) return json(res, 403, { error: `${agent} 未启用，或你的账号没有使用权限` });
+    if (!isKeyAgent(agent)) return json(res, 200, { ok: true, has: false, note: '这个 agent 不用填 key（走官方登录）' });
+    const st = agentKeyState(agent, process.env, keyDirFor(ctx));
+    json(res, 200, { ok: true, id: st.id, has: st.has, source: st.source, keyTail: st.tail, keyEnv: st.env });
+  });
+
+  router.on('POST', '/api/cli/agent-key', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const agent = String(body.agent || '');
+    if (!CLI_AGENTS.includes(agent)) return json(res, 400, { error: '未知 agent' });
+    if (!allow(ctx, agent)) return json(res, 403, { error: `${agent} 未启用，或你的账号没有使用权限` });
+    const r = setAgentKey(agent, body.key, keyDirFor(ctx));
+    if (r.error) return json(res, 400, { error: r.error });
+    refreshAgentProbes();                     // 存完立刻重探（接入卡当场变绿）
+    console.log(`[agents] ${ctx.kind === 'user' ? ctx.user : 'admin'} 的 ${r.id} 凭据${r.has ? '已保存' : '已清除'}（尾 ${r.tail || '—'}）`);
+    json(res, 200, { ok: true, has: r.has, keyTail: r.tail });
   });
 }

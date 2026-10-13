@@ -20,7 +20,12 @@ delete process.env.ZAI_API_KEY;
 const { AGENT_KEYS_DIR, agentKeyList, agentKeyState, cliKeyEnv, envAgentKey, isKeyAgent, savedAgentKey, setAgentKey } =
   await import('./runtime/agent-keys.mjs');
 
-test('存一把 key：落盘是密文，明文不出现在文件里；读回来是同一把', () => {
+// 落盘要过 extension-secrets 的加密（Windows = DPAPI）。个别环境（如开发机的沙箱）
+// spawn 不了系统 shell，DPAPI 一律 EBUSY——这类环境跳过「真写盘」的用例（见 agent-keys-identity.test.mjs）。
+const CAN_PERSIST = !setAgentKey('codex', 'sk-probe-only').error;
+setAgentKey('codex', '');
+
+test('存一把 key：落盘是密文，明文不出现在文件里；读回来是同一把', { skip: CAN_PERSIST ? false : '本机加密不可用（DPAPI EBUSY）' }, () => {
   const r = setAgentKey('codex', 'sk-secret-abcdef');
   assert.equal(r.ok, true);
   assert.equal(savedAgentKey('codex'), 'sk-secret-abcdef');

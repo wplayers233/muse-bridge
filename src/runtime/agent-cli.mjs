@@ -407,7 +407,7 @@ export function parseLine(agent, rawLine) {
 // ── 跑一轮 ─────────────────────────────────────────────────────────────────
 // 异步生成器：yield 归一事件。子进程生命期绑在 signal 上（客户端断开就杀——这类 CLI 会一直跑）。
 // 抛错都在事件里给前端说明白，不 reject（调用方只管往 SSE 里写）。
-export async function* runCliTurn(agent, { prompt, sessionId = '', cwd = '', model = '', effort = '', images = [], signal = null, env = process.env, binDir = '' } = {}) {
+export async function* runCliTurn(agent, { prompt, sessionId = '', cwd = '', model = '', effort = '', images = [], signal = null, env = process.env, keyEnv, binDir = '' } = {}) {
   if (!CLI_AGENTS.includes(agent)) { yield { type: 'error', message: '未知 agent：' + agent }; return; }
   const searchEnv = binDir ? { ...env, PATH: binDir + ':' + (env.PATH || '') } : env;
   const bin = findCliBin(agent, searchEnv);
@@ -424,12 +424,13 @@ export async function* runCliTurn(agent, { prompt, sessionId = '', cwd = '', mod
   //
   // env：进程环境 + 服务器上存的那把 key（设置 → Agent，见 runtime/agent-keys.mjs；存的那把压过
   // 环境变量）+ 两句让 CLI 别说废话的输出选项。没存过 key 就原样继承进程环境（`codex login` /
-  // `zcode login` 的登录态照旧可用）。
+  // `zcode login` 的登录态照旧可用）。keyEnv 是给【每身份隔离】准备的显式覆盖（路由层按
+  // cliSpawnKeyEnv(ctx, agent) 传各人自己的那把）；不给就用全局那份（admin / 老调用方行为不变）。
   //
   // 自带的 codex 是个 Node ESM shim（node_modules/.bin/codex → @openai/codex/bin/codex.js，
   // 由它用绝对路径拉起平台包里的真身）：这类 .js 用 node 起，不依赖 shebang 里那句
   // `#!/usr/bin/env node`——服务器上 node 不在 PATH 时（systemd 单元、精简镜像）也照样能跑。
-  const childEnv = { ...env, ...cliKeyEnv(agent), NO_COLOR: '1', TERM: 'dumb' };
+  const childEnv = { ...env, ...(keyEnv !== undefined ? keyEnv : cliKeyEnv(agent)), NO_COLOR: '1', TERM: 'dumb' };
   const isJs = /\.(c|m)?js$/i.test(bin);
   const child = spawn(isJs ? process.execPath : bin, isJs ? [bin, ...args] : args, {
     cwd: cwd || undefined,

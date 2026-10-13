@@ -7,6 +7,7 @@
   import { onMount } from 'svelte';
   import CliChat from './cli/CliChat.svelte';
   import CliDock from './dock/CliDock.svelte';
+  import CliKeyForm from './cli/CliKeyForm.svelte';
   import AccountCard from './AccountCard.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
   import { cliChat, cliNew, cliPick, cliDrop, cliSessions, cliActiveId, cliStatus, loadCliStatus, statusOf, cwdOf, setCliCwd,
@@ -175,6 +176,9 @@
               <button class="cx-btn" onclick={() => cliNew('codex')} disabled={chat.busy}>{t('新会话')}</button>
               <button class="cx-btn" onclick={() => loadCliStatus(true)}>{t('重新检测')}</button>
             </div>
+            <!-- 我自己的 API key（admin=全局那份；user=自己的，见 /api/cli/agent-key） -->
+            <div class="cx-row"><span class="cx-k">{t('凭据')}</span></div>
+            <CliKeyForm agent="codex" />
             <!-- 工作台四件套：终端 / 审阅 / 文件 / 任务，都在这个 agent 的工作目录上 -->
             <div class="cx-row"><span class="cx-k">{t('工作台')}</span>
               <span class="cx-v cx-tools">
@@ -220,6 +224,8 @@
     <button class="d-item" onclick={() => { loadCliStatus(true); }}>
       <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6.5v4M10 13.6h.01"/><circle cx="10" cy="10" r="7"/></svg></span>{t('接入设置')}
     </button>
+    <!-- 我自己的 API key（宽屏在右侧「接入」页签里；窄屏在这里） -->
+    <div class="d-key"><CliKeyForm agent="codex" /></div>
 
     <div class="d-sec">{t('会话')}</div>
     <div class="d-list">
@@ -411,6 +417,7 @@
   .d-lead { width: 22px; height: 20px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
   .d-lead svg { width: 17px; height: 17px; }
   .d-sec { font-size: 12px; opacity: .55; padding: 14px 4px 4px 10px; }
+  .d-key { padding: 10px 10px 4px; border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent); margin-top: 10px; }
   .d-list { display: flex; flex-direction: column; }
   .d-row { position: relative; display: flex; align-items: center; border-radius: 8px; margin-bottom: .5px; }
   .d-row.cur { background: color-mix(in srgb, currentColor 10%, transparent); }

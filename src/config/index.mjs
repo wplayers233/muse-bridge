@@ -55,8 +55,10 @@ export const EDITION = EDITION_RAW === 'host' || EDITION_RAW === 'server' ? EDIT
 const FEATURE_DEFAULTS = {
   // multiUser：注册、邀请码、普通账号登录。关着时只有管理员与「服务账号」（程序用的账号）能登录。
   // remoteAdmin：服务端控制台（/api/admin/*）对管理员身份远程开放；关着时只认本机直连。
-  host: { multiUser: false, remoteAdmin: false },
-  server: { multiUser: true, remoteAdmin: true },
+  // cliKeyShare：注册用户没填自己的 key 时，回落用管理员在「设置 → Agent」存的那把。
+  //   默认关——那把是管理员的计费 key，不该静默摊给所有人；开了才共享。
+  host: { multiUser: false, remoteAdmin: false, cliKeyShare: false },
+  server: { multiUser: true, remoteAdmin: true, cliKeyShare: false },
 };
 const featureOverrides = (config.features && typeof config.features === 'object') ? config.features : {};
 export const FEATURES = Object.freeze(Object.fromEntries(Object.entries(FEATURE_DEFAULTS[EDITION]).map(([k, v]) => [k, typeof featureOverrides[k] === 'boolean' ? featureOverrides[k] : v])));

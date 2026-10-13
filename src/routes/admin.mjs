@@ -165,7 +165,8 @@ export function registerAdminRoutes(router, { authOk, adminCredential = null, ad
   }));
 
   // ---- 外部 CLI agent（Codex / ZCode）的凭据与安装 ----
-  // 这两家的 CLI 各自认自己的登录态（codex 写 $CODEX_HOME/auth.json，zcode 写 ~/.zcode/cli/config.json），
+  // 这两家的 CLI 各自认自己的登录态（codex 写 $CODEX_HOME/auth.json，zcode 写
+  // {ZCODE_DATA_BASE_DIR|~}/.zcode/v2/credentials.json），
   // 而登录是【交互式】的、网页上点不了。等价物就是这里：管理员在 设置 → Agent 里填一把厂商 key，
   // 落在加密的凭据文件里（runtime/agent-keys.mjs），跑 CLI 时注进子进程 env。
   // 返回的只有尾 4 位——整把 key 出去就再也不回来。

@@ -333,13 +333,15 @@ export async function appServerAvailable({ env = process.env, binDir = '' } = {}
  * @param {(m:string,p:object)=>Promise<object>} [o.onServerRequest] 审批回调，回 {decision}
  * @param {AbortSignal} [o.signal]
  * @param {object} [o.env]
+ * @param {object} [o.keyEnv]    key 注入的显式覆盖（每身份：路由层传 cliSpawnKeyEnv(ctx,'codex')；
+ *                               不给 = 全局那份，admin / 老调用方行为不变）
  * @param {string} [o.binDir]
  */
 export async function* runAppServerTurn(agent, o = {}) {
   const {
     prompt, images = [], threadId = '', cwd = '', model = '', effort = '',
     approvalPolicy = 'on-request', sandbox = 'workspace-write',
-    onServerRequest = null, signal = null, env = process.env, binDir = '',
+    onServerRequest = null, signal = null, env = process.env, keyEnv, binDir = '',
   } = o;
   if (agent !== 'codex') { yield { type: 'error', message: 'app-server 这条路只给 codex 用' }; return; }
   const searchEnv = binDir ? { ...env, PATH: binDir + ':' + (env.PATH || '') } : env;
@@ -351,8 +353,8 @@ export async function* runAppServerTurn(agent, o = {}) {
   const child = spawn(isJs ? process.execPath : bin, isJs ? [bin, 'app-server'] : ['app-server'], {
     cwd: cwd || undefined,
     // 存过的 key 注进去（agent-keys）：没登录只存了 key 的机器，这条路也能起来——
-    // 与 exec 路（agent-cli.mjs runCliTurn）同一待遇。
-    env: { ...searchEnv, ...cliKeyEnv('codex'), NO_COLOR: '1', TERM: 'dumb' },
+    // 与 exec 路（agent-cli.mjs runCliTurn）同一待遇。keyEnv：每身份显式覆盖（见上文）。
+    env: { ...searchEnv, ...(keyEnv !== undefined ? keyEnv : cliKeyEnv('codex')), NO_COLOR: '1', TERM: 'dumb' },
     stdio: ['pipe', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
   });

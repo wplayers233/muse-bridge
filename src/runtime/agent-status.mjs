@@ -130,10 +130,10 @@ const RUNNABLE = {
 
 const fileHasKey = (file, re) => { try { return re.test(readFileSync(file, 'utf8')); } catch { return false; } };
 
-// codex 的凭据：① 服务器上存的那把（设置 → Agent，见 runtime/agent-keys.mjs）；② 环境变量；
-// ③ 官方 `codex login` 写下的 $CODEX_HOME/auth.json（默认 ~/.codex/auth.json，0600）。
-function codexAuthed(env = process.env) {
-  if (savedAgentKey('codex') || envAgentKey('codex', env)) return true;
+// codex 的凭据：① 服务器上存的那把（keyDir 指到哪份就查哪份：admin=全局，user=各人自己的）；
+// ② 环境变量；③ 官方 `codex login` 写下的 $CODEX_HOME/auth.json（默认 ~/.codex/auth.json，0600）。
+function codexAuthed(env = process.env, keyDir = undefined) {
+  if (savedAgentKey('codex', keyDir) || envAgentKey('codex', env)) return true;
   const home = env.CODEX_HOME || path.join(env.HOME || os.homedir(), '.codex');
   const f = path.join(home, 'auth.json');
   try { return !!readFileSync(f, 'utf8').trim() && JSON.parse(readFileSync(f, 'utf8')).auth_mode !== 'none'; } catch { return false; }
@@ -182,17 +182,25 @@ const INSTALLED = {
 const PROBE_TTL = 20_000;
 let probeCache = null;   // { at, runnable:{}, authed:{}, installed:{} }
 function invalidateProbes() { probeCache = null; }
-function probes() {
-  if (probeCache && Date.now() - probeCache.at < PROBE_TTL) return probeCache;
+
+// 探一次。opts 缺省 = 全局探测（有 20 秒缓存，status 轮询与 enabledAgents 都走它）；
+// 给了 { env, keyDir } = 每身份探测（user 的 CODEX_HOME / 凭据目录各是各的），现算不进缓存
+// ——每个身份的结果不同，缓存只对全局那份有意义。
+function probes(opts = {}) {
+  const { env = process.env, keyDir = undefined } = opts;
+  if (opts.env === undefined && opts.keyDir === undefined) {
+    if (probeCache && Date.now() - probeCache.at < PROBE_TTL) return probeCache;
+  }
   const runnable = {}, authed = {}, installed = {};
   for (const id of AGENT_IDS) {
     try { runnable[id] = !!RUNNABLE[id](); } catch { runnable[id] = false; }
     // installed 只对「跑外部 CLI」的 agent 有意义；其余（claude / dimensio 自带）恒算装好。
     try { installed[id] = INSTALLED[id] ? !!INSTALLED[id]() : runnable[id]; } catch { installed[id] = false; }
-    try { authed[id] = runnable[id] && !!AUTHED[id](); } catch { authed[id] = false; }
+    try { authed[id] = runnable[id] && (id === 'codex' ? !!codexAuthed(env, keyDir) : !!AUTHED[id]()); } catch { authed[id] = false; }
   }
-  probeCache = { at: Date.now(), runnable, authed, installed };
-  return probeCache;
+  const result = { at: Date.now(), runnable, authed, installed };
+  if (opts.env === undefined && opts.keyDir === undefined) probeCache = result;
+  return result;
 }
 
 export function agentRunnable(id) { return !!probes().runnable[id]; }
@@ -222,9 +230,11 @@ export function agentInstallNote(id) {
   return '这台机器上不可用';
 }
 
-// 给设置「Agent」页（管理员）的完整视图。
-export function agentStatusList() {
-  const p = probes();
+// 给设置「Agent」页（管理员）的完整视图；opts（env / keyDir）给每身份视图用
+// （/api/agents/status 对 user 传各人自己的凭据目录与 CODEX_HOME，见 routes/agent-cli.mjs）。
+export function agentStatusList(opts = {}) {
+  const p = probes(opts);
+  const keyDir = opts.keyDir;
   return AGENTS.map((a) => {
     const runnable = !!p.runnable[a.id];
     const installed = !!p.installed[a.id];
@@ -234,7 +244,7 @@ export function agentStatusList() {
       ? (NOT_RUNNABLE_NOTE[a.id] || '这台机器上不可用')
       : INSTALLED[a.id] && !installed ? agentInstallNote(a.id)
         : (!authed ? (isKeyAgent(a.id) ? '还没配认证（填一把 key 或先登录 CLI）' : '还没配认证') : '');
-    const key = isKeyAgent(a.id) ? agentKeyState(a.id) : null;
+    const key = isKeyAgent(a.id) ? agentKeyState(a.id, opts.env || process.env, keyDir) : null;
     return {
       id: a.id,
       label: a.label,

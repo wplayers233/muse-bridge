@@ -38,8 +38,10 @@ const { contextFor, agentsFor } = await import('./runtime/identity.mjs');
 test('四个 agent 一张表：codex / zcode 挂在各自的 screen 上，且不默认传给注册用户', () => {
   assert.deepEqual([...AGENT_IDS], ['claude', 'dimensio', 'codex', 'zcode']);
   assert.deepEqual(AGENTS.map((a) => a.screen), ['claude', 'harness', 'codex', 'zcode']);
-  assert.deepEqual(AGENTS.filter((a) => a.multiUser).map((a) => a.id), ['claude', 'dimensio'], '只有 claude / dimensio 支持多人');
-  assert.deepEqual([...USER_DEFAULT_AGENTS], ['claude'], '新账号默认名单里没有 codex / zcode');
+  // P3 落地后四家全部支持多人：外部 CLI 的每身份数据目录（CODEX_HOME / ZCODE_DATA_BASE_DIR）
+  // 与按身份分库的 key 让「给注册用户开」不再共享宿主凭据。
+  assert.deepEqual(AGENTS.filter((a) => a.multiUser).map((a) => a.id), ['claude', 'dimensio', 'codex', 'zcode']);
+  assert.deepEqual([...USER_DEFAULT_AGENTS], ['claude'], '新账号默认名单里没有 codex / zcode（要管理员按人勾）');
   assert.deepEqual(screenAgents('codex'), ['codex']);
   assert.deepEqual(screenAgents('zcode'), ['zcode']);
 });
@@ -113,7 +115,7 @@ test('设置页的视图：这两家都带上 installed，缺 CLI 时 note 讲�
     const a = list.find((x) => x.id === id);
     assert.equal(typeof a.installed, 'boolean', id + ' 要有 installed');
     assert.equal(a.runnable, true, '分页自带，永远算「能开」');
-    assert.equal(a.multiUser, false);
+    assert.equal(a.multiUser, true, '每身份数据目录落地后对外部 CLI 开放多用户');
   }
   assert.ok(agentInstallNote('codex').includes('chatgpt.com/codex/install.sh'));
   assert.ok(agentInstallNote('zcode').includes('install-zcode.sh'), 'zcode 的说明指向自带脚本：' + agentInstallNote('zcode'));
@@ -134,14 +136,17 @@ test('admin 拿到全部启用的 agent（codex / zcode 也在）', () => {
   assert.equal(admin.allowZcode, true);
 });
 
-test('注册用户即使被勾了 codex / zcode 也拿不到（还没做每人隔离）', () => {
+test('注册用户被勾了 codex / zcode 就能用（multiUser 已开闸，按人授权）', () => {
   const u = { kind: 'user', user: 'someone', tier: 'pro', agents: ['claude', 'codex', 'zcode'] };
   const ctx = contextFor(u);
-  assert.deepEqual(agentsFor(u).filter((id) => id === 'codex' || id === 'zcode'), []);
-  assert.equal(ctx.allowCodex, false);
-  assert.equal(ctx.allowZcode, false);
-  // 管理员把这两家塞进某人的名单也没用：multiUser 挡着
-  assert.deepEqual(agentsFor({ kind: 'user', user: 'x', tier: 'pro', agents: ['codex'] }), []);
+  assert.equal(ctx.allowCodex, true);
+  assert.equal(ctx.allowZcode, true);
+  // 没勾的依旧拿不到：名单里没有就是没有
+  assert.deepEqual(agentsFor({ kind: 'user', user: 'x', tier: 'pro', agents: ['claude'] }).filter((id) => id === 'codex' || id === 'zcode'), []);
+  // 名单里只勾 codex：zcode 不放行
+  const ctx2 = contextFor({ kind: 'user', user: 'x', tier: 'pro', agents: ['codex'] });
+  assert.equal(ctx2.allowCodex, true);
+  assert.equal(ctx2.allowZcode, false);
 });
 
 test('公开身份：share 一个都没有；快照只有 Claude', () => {

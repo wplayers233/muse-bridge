@@ -9,8 +9,10 @@
 // 新代码一律用统一 id；要落到某个子系统时查这张表，别再各写一份。
 //
 // multiUser：这个 agent 能不能开给注册用户。dimensio 是每人一个进程、锁在自己文件夹里的
-//   租户实例，所以可以。codex / zcode 现在只跑本机的 CLI（用宿主的登录态与 `~/.codex`、
-//   `~/.zcode`），每身份隔离还没做，所以 multiUser:false —— 只对管理员开。
+//   租户实例，所以可以。codex / zcode 走的是「每身份数据目录」（user 的 CODEX_HOME /
+//   ZCODE_DATA_BASE_DIR 落在各自 .bridge/cli 下，见 runtime/agent-keys.mjs 的 cliDataEnv），
+//   key 也按身份各存一把（<dataDir>/agents/），互不可见——所以同样可以。管理员在「用户」页
+//   按人勾选授权（没勾 = 默认只有 Claude）。
 //
 // 外部 CLI agent（codex / zcode）比前两家多三个服务端元数据字段（前端经 /api/agents/status 拿到）：
 //   keyEnv   这把 key 注进哪个环境变量（设置 → Agent 里填的那一把，见 runtime/agent-keys.mjs）；
@@ -20,14 +22,14 @@ export const AGENTS = Object.freeze([
   { id: 'claude', label: 'Claude', screen: 'claude', chat: 'claude', multiUser: true },
   { id: 'dimensio', label: 'dimensio', screen: 'harness', chat: null, multiUser: true },
   {
-    id: 'codex', label: 'Codex', screen: 'codex', chat: null, multiUser: false,
+    id: 'codex', label: 'Codex', screen: 'codex', chat: null, multiUser: true,
     keyEnv: 'OPENAI_API_KEY',
     login: 'codex login',
     install: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh',
     docs: 'https://github.com/openai/codex',
   },
   {
-    id: 'zcode', label: 'ZCode', screen: 'zcode', chat: null, multiUser: false,
+    id: 'zcode', label: 'ZCode', screen: 'zcode', chat: null, multiUser: true,
     // 没有 keyEnv：zcode 不认厂商 key 环境变量（Z.ai 自家是 Coding Plan 账号制，凭据由官方
     // 浏览器登录写进加密的 ~/.zcode/v2/）。它的「认证」= 在服务器上跑过一次 zcode login。
     login: 'zcode login',
