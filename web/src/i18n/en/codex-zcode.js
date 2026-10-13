@@ -190,4 +190,11 @@ export default {
 
   // —— 账户菜单里的 coding plan 余额行（UserMenu，按所在页显示对应那家）——
   '余额 {b}': 'Balance {b}',
+
+  // —— 输入框照官方 PC 端：+ 弹层菜单 / 模型一体浮层（CliAddMenu / CliModelPicker）——
+  '添加图片': 'Add photos',
+  '添加文件': 'Add files',
+  '添加附件': 'Add attachments',
+  '选择模型': 'Choose a model',
+  '‹ 返回': '‹ Back',
   };

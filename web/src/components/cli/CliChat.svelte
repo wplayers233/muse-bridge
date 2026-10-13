@@ -11,13 +11,14 @@
   //   · 深度靠背景对比与描边，不靠大阴影（§537 Elevation）。
   //
   // 状态在 lib/cliChat.svelte.js（模块级，退回主页再进来不丢；会话列表也在那儿）。
-  import { cliChat, cliSend, cliStop, cliNew, cliStatus, loadCliStatus, statusOf, answerApproval, cwdOf,
-    cliModels, modelOf, effortOf, setCliModel } from '../../lib/cliChat.svelte.js';
+  import { cliChat, cliSend, cliStop, cliNew, cliStatus, loadCliStatus, statusOf, answerApproval, cwdOf } from '../../lib/cliChat.svelte.js';
   import { apiUrl } from '../../lib/server.js';
   import { authHeaders } from '../../lib/api.js';
   import { renderMarkdown } from '../../lib/md.js';
   import { showToast } from '../../lib/toast.svelte.js';
   import { t, tr } from '../../lib/i18n.js';
+  import CliAddMenu from './CliAddMenu.svelte';
+  import CliModelPicker from './CliModelPicker.svelte';
 
   // agent: 'codex' | 'zcode'；placeholder：输入栏提示语（各家官方口吻，外层给）；
   // install/login/docUrl：接入卡上的命令与文档；hero：空态（外层给，含大问候）。
@@ -105,9 +106,10 @@
   }
   const toolLabel = (s) => (s === 'completed' ? '✓' : s === 'failed' ? '✕' : '•');
 
-  // ── 输入框的 PC 端功能：/ 命令、@ 文件提及、图片附件（codex 走官方 exec -i）──
-  let atts = $state([]);            // 待发的图片 [{name, dataUrl}]
-  let fileEl = $state(null);
+  // ── 输入框的 PC 端功能：+ 附件菜单、/ 命令、@ 文件提及、图片附件（codex 走官方 exec -i）──
+  let atts = $state([]);            // 待发的附件 [{name, dataUrl, isImg}]
+  let photoEl = $state(null);       // 图片专用 input（只列 image/*）
+  let fileEl = $state(null);        // 文件 input（不过滤类型）
   let taEl = $state(null);
   const MAX_IMGS = 6, MAX_IMG_MB = 10;
   function addFiles(files) {
@@ -116,7 +118,10 @@
       if (atts.length >= MAX_IMGS) { showToast(t('最多附 {n} 张图片', { n: MAX_IMGS }), 'err'); break; }
       if (f.size > MAX_IMG_MB * 1024 * 1024) { showToast(t('图片太大（单张限 {n}MB）', { n: MAX_IMG_MB }), 'err'); continue; }
       const r = new FileReader();
-      r.onload = () => { atts = [...atts, { name: f.name || 'image.png', dataUrl: String(r.result) }]; };
+      r.onload = () => {
+        const dataUrl = String(r.result);
+        atts = [...atts, { name: f.name || 'image.png', dataUrl, isImg: /^data:image\//.test(dataUrl) }];
+      };
       r.readAsDataURL(f);
     }
   }
@@ -124,6 +129,22 @@
     const imgs = [...(e.clipboardData?.items || [])].filter((i) => i.type.startsWith('image/'));
     if (imgs.length && agent === 'codex') { e.preventDefault(); addFiles(imgs.map((i) => i.getAsFile()).filter(Boolean)); }
   }
+
+  // 加号菜单（照 Claude 页 Composer 的加号弹层，精简两项目）：开之前测上下空间定弹向。
+  let addOpen = $state(false);
+  let plusBtn = $state(null);
+  let addDir = $state('up');
+  function toggleAdd() {
+    if (!addOpen && plusBtn) {
+      const r = plusBtn.getBoundingClientRect();
+      addDir = (window.innerHeight - r.bottom) >= r.top ? 'down' : 'up';
+    }
+    addOpen = !addOpen;
+  }
+  // 菜单项只负责点开对应的文件对话框（附件状态全在本组件，不进菜单组件）。
+  const pickPhotos = () => photoEl?.click();
+  const pickFiles = () => fileEl?.click();
+  function onPick(e) { addFiles([...e.currentTarget.files]); e.currentTarget.value = ''; }
 
   // / 命令菜单（客户端本地命令，与 PC 端 TUI 的斜杠习惯一致）
   const SLASH = [
@@ -389,10 +410,17 @@
       {#if atts.length}
         <div class="atts">
           {#each atts as a, i (i + a.name)}
-            <span class="att">
-              <img src={a.dataUrl} alt={a.name} />
-              <button class="att-x" onclick={() => atts = atts.filter((_, j) => j !== i)} aria-label={t('移除')}>×</button>
-            </span>
+            {#if a.isImg}
+              <span class="att">
+                <img src={a.dataUrl} alt={a.name} />
+                <button class="att-x" onclick={() => atts = atts.filter((_, j) => j !== i)} aria-label={t('移除')}>×</button>
+              </span>
+            {:else}
+              <span class="att file">
+                <span class="att-fname">📄 {a.name}</span>
+                <button class="att-x" onclick={() => atts = atts.filter((_, j) => j !== i)} aria-label={t('移除')}>×</button>
+              </span>
+            {/if}
           {/each}
         </div>
       {/if}
@@ -401,31 +429,21 @@
           oninput={onInput} onpaste={onPaste} onkeydown={onKey} disabled={!ready}></textarea>
         <div class="bar">
           {#if agent === 'codex'}
-            <button class="plus" onclick={pickFiles} disabled={!ready} aria-label={t('附图片')} title={t('附图片')}>
+            <button class="plus" bind:this={plusBtn} onclick={toggleAdd} disabled={!ready} aria-label={t('添加附件')} title={t('添加附件')}>
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10 4.5v11M4.5 10h11"/></svg>
             </button>
-            <input type="file" bind:this={fileEl} accept="image/*" multiple hidden
-              onchange={(e) => { addFiles([...e.currentTarget.files]); e.currentTarget.value = ''; }} />
+            {#if addOpen}
+              <CliAddMenu dir={addDir} onPickPhotos={pickPhotos} onPickFiles={pickFiles} onClose={() => (addOpen = false)} />
+            {/if}
+            <input type="file" bind:this={photoEl} accept="image/*" multiple hidden onchange={onPick} />
+            <input type="file" bind:this={fileEl} multiple hidden onchange={onPick} />
           {/if}
           {#if cwdOf(agent)}
             <span class="cwd mono" title={cwdOf(agent)}>{cwdOf(agent).split(/[\\/]/).filter(Boolean).pop()}</span>
           {/if}
           <span class="bspacer"></span>
-          {#if agent === 'codex' && (cliModels.list || []).filter((m) => !m.hidden).length}
-            <select class="pill" value={modelOf('codex')} onchange={(e) => setCliModel('codex', { model: e.currentTarget.value, effort: '' })} aria-label={t('模型')}>
-              <option value="">{t('用 codex 自己的配置')}</option>
-              {#each cliModels.list.filter((m) => !m.hidden) as m (m.id)}
-                <option value={m.id}>{m.label || m.id}</option>
-              {/each}
-            </select>
-            {#if modelOf('codex') && effortOf('codex') !== ''}
-              <select class="pill" value={effortOf('codex')} onchange={(e) => setCliModel('codex', { model: modelOf('codex'), effort: e.currentTarget.value })} aria-label={t('思考深度')}>
-                <option value="">{t('默认')}</option>
-                {#each ((cliModels.list || []).find((m) => m.id === modelOf('codex'))?.efforts || []) as v (v)}
-                  <option value={v}>{v}</option>
-                {/each}
-              </select>
-            {/if}
+          {#if agent === 'codex'}
+            <CliModelPicker agent="codex" disabled={chat.busy || !ready} />
           {/if}
           {#if chat.busy}
             <button class="send stop" onclick={() => cliStop(agent)} aria-label={t('停止')}>
@@ -571,23 +589,20 @@
   .composer.bottom { padding-bottom: calc(12px + var(--sab, 0px)); }
   .sess { display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--faint, #8a8a86); }
   .sess code { font-family: var(--mono, monospace); font-size: 11px; opacity: .8; }
-  /* 输入卡照 dimensio：一层圆角壳包住「纯输入区 + 控制条」，壳内不再有第二道边框 */
-  .box { display: flex; flex-direction: column; border: 1px solid var(--line, #3a3a38); border-radius: 18px;
-    background: color-mix(in srgb, currentColor 5%, transparent); padding: 4px 6px 6px; }
+  /* 输入卡照官方 PC 端 composer：圆角 ~22 的一层壳包住「纯输入区 + 44px 控制条」，壳内不再有第二道边框 */
+  .box { display: flex; flex-direction: column; border: 1px solid var(--line, #3a3a38); border-radius: 22px;
+    background: color-mix(in srgb, currentColor 5%, transparent); padding: 4px 8px 8px; }
   .ta { width: 100%; resize: none; font: inherit; font-size: 15px; line-height: 1.5;
-    padding: 10px 10px 6px; border: none; background: transparent; color: var(--text, #eee); outline: none; }
+    padding: 10px 8px 4px; border: none; background: transparent; color: var(--text, #eee); outline: none; }
   .ta::placeholder { color: var(--faint, #8a8a86); }
   .box:focus-within { border-color: color-mix(in srgb, var(--agent-accent, currentColor) 45%, transparent); }
   .box:has(.ta:disabled) { opacity: .5; }
-  /* 控制条：左工作目录、右模型胶囊 + 圆形发送钮（dimensio 同构） */
-  .bar { display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 8px; }
+  /* 控制条：左 +/工作目录、右模型胶囊 + 圆形发送钮（官方 PC 端同构，条高 44px） */
+  .bar { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 6px 2px 6px; }
   .cwd { font-size: 11.5px; color: var(--faint, #8a8a86); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 45%; }
   .bspacer { flex: 1; }
-  .pill { font: inherit; font-size: 12px; padding: 4px 9px; border-radius: 999px; border: none; color: inherit;
-    background: color-mix(in srgb, currentColor 8%, transparent); max-width: 180px; text-overflow: ellipsis; }
-  .pill option { color: #111; background: #fff; }
-  /* 圆形发送钮（dimensio 同款），accent 随各家（Codex 绿 / ZCode 蓝） */
-  .send { flex: none; width: 32px; height: 32px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  /* 圆形发送钮（官方 PC 端同款，accent 随各家：Codex 绿 / ZCode 蓝） */
+  .send { flex: none; width: 34px; height: 34px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
     background: var(--agent-accent, var(--text, #eee)); color: #fff; }
   .send svg { width: 17px; height: 17px; }
   .send:disabled { opacity: .35; }
@@ -597,14 +612,19 @@
   .mini.link { text-decoration: none; }
   .mini:active { opacity: .6; }
 
-  /* 控制条左端的 ＋（codex 图片附件入口） */
-  .plus { flex: none; width: 28px; height: 28px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; color: inherit; opacity: .65; }
-  .plus svg { width: 16px; height: 16px; }
-  .plus:active { opacity: 1; background: color-mix(in srgb, currentColor 10%, transparent); }
+  /* 控制条左端的 ＋（codex 附件菜单入口，官方 PC 端同款 30px 弱按钮） */
+  .plus { flex: none; width: 30px; height: 30px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; color: inherit; }
+  .plus svg { width: 17px; height: 17px; }
+  @media (hover: hover) { .plus:hover { background: color-mix(in srgb, currentColor 8%, transparent); } }
+  .plus:active { background: color-mix(in srgb, currentColor 10%, transparent); }
   .plus:disabled { opacity: .3; }
-  /* 待发图片缩略条 + 弹出菜单（/ 命令 与 @ 提及共用一层） */
+  /* 待发附件缩略条 + 弹出菜单（/ 命令 与 @ 提及共用一层）：图片走缩略图，其余文件是「📄+文件名」chip */
   .atts { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 2px 8px; }
   .att { position: relative; display: inline-flex; }
+  .att.file { align-items: center; max-width: 100%; padding: 6px 10px; border-radius: 10px; font-size: 12.5px;
+    border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+    background: color-mix(in srgb, currentColor 6%, transparent); }
+  .att-fname { min-width: 0; max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .att img { width: 46px; height: 46px; object-fit: cover; border-radius: 8px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); }
   .att-x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; font-size: 12px; line-height: 1;
     display: inline-flex; align-items: center; justify-content: center; background: var(--text, #eee); color: var(--bg, #1b1b19); }
