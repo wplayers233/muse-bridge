@@ -35,6 +35,12 @@ const APPROVAL_METHODS = Object.freeze({
 
 export const isApprovalMethod = (m) => Object.prototype.hasOwnProperty.call(APPROVAL_METHODS, m);
 
+// 走「工具行」归一的 ThreadItem 类型（item/started|completed|updated 三相都画）。
+const TOOL_ITEMS = new Set([
+  'commandExecution', 'fileChange', 'mcpToolCall', 'webSearch',
+  'dynamicToolCall', 'collabAgentToolCall', 'subAgentActivity', 'functionCallOutput',
+]);
+
 const TOOL_TEXT_MAX = 20_000;
 const cut = (s) => String(s).slice(0, TOOL_TEXT_MAX);
 
@@ -58,6 +64,13 @@ export function appToolName(item) {
     }
     case 'mcpToolCall': return [item.server, item.tool].filter(Boolean).join(' · ') || 'MCP 工具';
     case 'webSearch': return '联网搜索' + (item.query ? '：' + String(item.query).slice(0, 80) : '');
+    case 'dynamicToolCall': return '动态工具' + (item.tool ? '：' + String(item.tool).slice(0, 80) : '');
+    case 'collabAgentToolCall': return '协作代理' + (item.tool ? ' · ' + String(item.tool) : '');
+    case 'subAgentActivity': {
+      const base = String(item.agentPath || '').split(/[\\/]/).pop();
+      return '子代理' + (base ? '：' + base.slice(0, 80) : '');
+    }
+    case 'functionCallOutput': return item.name ? String(item.name).slice(0, 120) : '函数调用';
     default: return item.type ? String(item.type) : '工具';
   }
 }
@@ -91,6 +104,21 @@ export function normAppToolItem(item, phase) {
     if (txt) out.output = cut(txt);
   } else if (item.type === 'webSearch') {
     if (item.query) out.summary = String(item.query).slice(0, 400);
+  } else if (item.type === 'dynamicToolCall') {
+    if (item.tool) out.tool = String(item.tool).slice(0, 120);
+    const txt = dynamicOutputText(item);
+    if (txt) out.output = cut(txt);
+  } else if (item.type === 'collabAgentToolCall') {
+    const txt = collabAgentsText(item);
+    if (txt) out.output = cut(txt);
+  } else if (item.type === 'subAgentActivity') {
+    if (item.kind) out.summary = String(item.kind);
+    // kind 自带结论：completed/interrupted 比 phase 更权威，直接采信。
+    if (item.kind === 'completed') out.status = 'completed';
+    else if (item.kind === 'interrupted') out.status = 'failed';
+  } else if (item.type === 'functionCallOutput') {
+    const txt = functionOutputText(item);
+    if (txt) out.output = cut(txt);
   }
   return out;
 }
@@ -121,6 +149,35 @@ function mcpResultText(item) {
     .map((c) => (c && typeof c === 'object' && typeof c.text === 'string' ? c.text : ''))
     .filter(Boolean);
   return parts.join('\n');
+}
+
+// dynamicToolCall 的输出：contentItems 里挑 text 块拼接（inputImage/inputAudio 这类非文本块不展开）。
+function dynamicOutputText(item) {
+  const items = Array.isArray(item.contentItems) ? item.contentItems : [];
+  return items
+    .map((c) => (c && c.type === 'inputText' && typeof c.text === 'string' ? c.text : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
+// collabAgentToolCall 的 agentsStates（{名字: {status, message?}}）→ 「名字：状态」行；
+// prompt 有值时放在最前，让人知道这次协作是去干什么。
+function collabAgentsText(item) {
+  const states = item.agentsStates && typeof item.agentsStates === 'object' ? item.agentsStates : {};
+  const lines = Object.entries(states)
+    .map(([name, st]) => String(name).slice(0, 80) + '：' + String((st && st.status) || (st && st.message) || ''));
+  if (item.prompt) lines.unshift(String(item.prompt).slice(0, 300));
+  return lines.join('\n');
+}
+
+// functionCallOutput 的 output：字符串，或 content 块数组（取 text 块拼接）。
+function functionOutputText(item) {
+  const o = item.output;
+  if (typeof o === 'string') return o;
+  if (Array.isArray(o)) {
+    return o.map((c) => (c && typeof c === 'object' && typeof c.text === 'string' ? c.text : '')).filter(Boolean).join('\n');
+  }
+  return '';
 }
 
 // turn/plan/updated 的 plan 步骤 → 待办清单条目（与 exec 路 todo_list 同一形状）。
@@ -436,6 +493,23 @@ export async function* runAppServerTurn(agent, o = {}) {
         continue;
       }
 
+      // 文件补丁实时更新：fileChange 的 diff 会在编辑过程中多次刷新
+      // （schema：{changes:[{path,kind,diff}], itemId, threadId, turnId}），
+      // 按 itemId 重组一条 updated 的工具行，前端 diff 卡跟着动。
+      if (m === 'item/fileChange/patchUpdated') {
+        const item = { id: String(p.itemId || ''), type: 'fileChange', changes: Array.isArray(p.changes) ? p.changes : [] };
+        yield normAppToolItem(item, 'updated');
+        continue;
+      }
+
+      // 命令在终端里等交互输入（比如装依赖时弹的确认提示）。注意这是【通知】不是
+      // 审批请求——schema 里没有对应 request 变体，也没有可回的 id，做不了审批卡；
+      // 给一条提示让用户知道卡在哪，交互本身留给 CLI 托管的终端。
+      if (m === 'item/commandExecution/terminalInteraction') {
+        yield { type: 'notice', text: '命令在等待终端输入：' + String(p.stdin || '').slice(0, 200) };
+        continue;
+      }
+
       if (m === 'item/started' || m === 'item/completed' || m === 'item/updated') {
         const item = p.item || {};
         const phase = m.slice(5);   // started|completed|updated
@@ -452,8 +526,23 @@ export async function* runAppServerTurn(agent, o = {}) {
           continue;
         }
         if (item.type === 'userMessage' || item.type === 'hookPrompt') continue;
-        if (item.type === 'commandExecution' || item.type === 'fileChange'
-          || item.type === 'mcpToolCall' || item.type === 'webSearch') {
+        // plan ThreadItem 只是计划文本快照，权威版在 turn/plan/updated（上面已画 todo），
+        // 这里重复画会闪两遍——明确跳过。
+        if (item.type === 'plan') continue;
+        if (item.type === 'sleep') {
+          // clock.sleep 工具的展示项：started 给一条「暂停 N 秒」，completed 不用再说。
+          if (phase === 'started') {
+            const sec = Math.max(1, Math.round((Number(item.durationMs) || 0) / 1000));
+            yield { type: 'notice', text: '暂停 ' + sec + ' 秒…' };
+          }
+          continue;
+        }
+        if (item.type === 'enteredReviewMode' || item.type === 'exitedReviewMode') {
+          yield { type: 'notice', text: (item.type === 'enteredReviewMode' ? '进入评审模式' : '退出评审模式')
+            + (item.review ? '：' + String(item.review).slice(0, 120) : '') };
+          continue;
+        }
+        if (TOOL_ITEMS.has(item.type)) {
           const ev = normAppToolItem(item, phase);
           // 命令输出：优先用增量攒下来的（app-server 早中期不给 aggregatedOutput）。
           if (!ev.output) {
