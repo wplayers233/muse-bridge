@@ -250,12 +250,13 @@ function applyEvent(agent, itemId, ev) {
   }
 }
 
-export async function cliSend(agent, prompt) {
+export async function cliSend(agent, prompt, images = []) {
   const text = String(prompt || '');
   const c = cliChat[agent];
   if (c.busy || !text.trim()) return;
   c.error = '';
-  c.items.push({ role: 'user', id: ++c.seq, text, status: 'done' });
+  const imgs = Array.isArray(images) ? images.length : 0;
+  c.items.push({ role: 'user', id: ++c.seq, text, imgs, status: 'done' });
   const itemId = ++c.seq;
   c.items.push({ role: 'agent', id: itemId, text: '', reasoning: '', tools: [], todos: [], notes: [], approvals: [], error: '', auth: false, status: 'running', usage: null });
   if (c.items.length > MAX_ITEMS) c.items.splice(0, c.items.length - MAX_ITEMS);
@@ -266,7 +267,12 @@ export async function cliSend(agent, prompt) {
     const res = await fetch(apiUrl('/api/' + agent + '/chat'), {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ prompt: text, sessionId: c.sessionId || undefined }),
+      // 图片走 base64 裸数据（不含 dataURL 前缀）；服务端落盘后交官方 -i 参数（仅 codex）。
+      body: JSON.stringify({
+        prompt: text,
+        sessionId: c.sessionId || undefined,
+        images: imgs ? images.map((a) => ({ name: a.name, data: String(a.dataUrl || '').split(',')[1] || '' })) : undefined,
+      }),
       credentials: 'same-origin',
       signal: ac.signal,
     });

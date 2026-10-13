@@ -69,6 +69,16 @@ export default {
     'This page runs the zcode CLI on this server: install it and sign in once, and it works with its own model configuration (the GLM family).',
 
   // —— 会话流（Codex / ZCode 共用一套渲染）——
+  '这一轮还没有任务清单': 'No task list for this turn yet',
+  '{done}/{n} 完成': '{done}/{n} done',
+  '还没装命令行工具 · 点这里安装': 'CLI not installed · tap to install',
+  '最多附 {n} 张图片': 'Up to {n} images',
+  '图片太大（单张限 {n}MB）': 'Image too large (max {n}MB each)',
+  '附图片': 'Attach image',
+  '移除': 'Remove',
+  '停止这一轮': 'Stop this turn',
+  '显示这些命令': 'Show these commands',
+  '命令：/new 新会话 · /stop 停止 · @ 引用文件': 'Commands: /new new session · /stop stop · @ mention a file',
   '把 {name} 接到这台机器上': 'Connect {name} to this server',
   '这台机器上还没装它的命令行工具。装好、登录一次，这个分页就能直接对话。':
     'Its command-line tool isn’t installed on this server yet. Install it, sign in once, and you can chat here.',

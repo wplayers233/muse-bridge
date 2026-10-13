@@ -1,4 +1,4 @@
-// CLI 分页（Codex / ZCode）的右侧工作台状态：终端 / 审阅 / 文件三张卡。
+// CLI 分页（Codex / ZCode）的右侧工作台状态：终端 / 审阅 / 文件 / 任务四张卡。
 //
 // 【为什么不复用 lib/dock.svelte.js 那份单例】
 // 那份绑死了 Claude 的会话与 ClaudePage 的生命周期：ClaudePage 是 keep-alive 常驻挂载的
@@ -17,7 +17,7 @@
 import { api } from './api.js';
 import { closeView, openView } from './cliDockViews.js';
 
-export const CLI_DOCK_TOOLS = Object.freeze(['review', 'term', 'files']);
+export const CLI_DOCK_TOOLS = Object.freeze(['review', 'term', 'files', 'tasks']);
 
 // 每个 agent 一份：{ open, views, view, meta }
 const make = () => ({ open: false, views: [], view: 'review', meta: null });

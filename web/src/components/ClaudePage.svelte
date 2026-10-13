@@ -1119,8 +1119,8 @@
 {#if ui.view === 'greeting'}
   <main class="hero">
     <div class="greeting">
-      <span class="logo-fly" in:fade={{ duration: 420, delay: 80 }} out:fly={{ x: -80, y: -22, duration: 320, easing: softDrop }}><ClaudeLogo anim="static" size={30} interactive /></span>
-      <h1 in:fly={{ y: 22, duration: 480, delay: 130 }} out:fade={{ duration: 150 }}>{greetName}</h1>
+      <span class="logo-fly" in:fade={{ duration: 420, delay: 80 }} out:fly={{ x: -80, y: -22, duration: 320, easing: softDrop }}><ClaudeLogo anim="static" size={64} interactive /></span>
+      <h1 in:fly={{ y: 22, duration: 420, delay: 120 }} out:fade={{ duration: 150 }}>{greetName}</h1>
     </div>
     <!-- 归属状态栏（目录/分支/worktree）：刻意放在 crossfade 元素【外面】——
          .hero-composer 与 .composer-inner 是同一 key 的形变两端，塞进去会让两端盒子
@@ -1386,12 +1386,20 @@
   .sb-handle:focus-visible .sb-pill { opacity: 1; background: var(--coral); transition-delay: 0s; }
   .stage { flex: 1; position: relative; min-height: 0; display: flex; flex-direction: column; }
   .stage.cz-on > :global(:not(.cz):not(.dlg):not(.dlg-bd)) { display: none; }   /* .dlg / .dlg-bd = 自定义页自己的弹窗 */
-  /* edge-to-edge 后页面顶到物理屏顶，15vh 要再加状态栏高度才回到原设计位置（不然 greeting 偏上）。 */
-  .hero { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: calc(15vh + var(--sat)) 16px 24px; gap: 0; }
-  .greeting { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
-  .logo-fly { display: inline-flex; flex: none; }
+  /* 空态照手机 Claude 构图：问候组在上三分之一，输入栏贴底（形变两端不变，morph 照常） */
+  .hero { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: calc(16vh + var(--sat, 0px)) 16px calc(16px + var(--sab, 0px)); gap: 0; }
+  .greeting { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-bottom: 22px; }
+  .logo-fly { display: inline-flex; flex: none; animation: claudeMarkIn 1850ms cubic-bezier(.22, 1, .36, 1) both; transform-origin: 50% 50%; }
+  @keyframes claudeMarkIn {
+    0% { opacity: 0; transform: rotate(-120deg) scale(.5); }
+    55% { opacity: 1; }
+    70% { transform: rotate(8deg) scale(1.06); }
+    85% { transform: rotate(-3deg) scale(.99); }
+    100% { opacity: 1; transform: rotate(0deg) scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) { .logo-fly { animation-duration: .01s; } }
   .greeting h1 { font-family: var(--serif-stack); font-weight: 290; font-size: 27px; line-height: 1.12; color: var(--serif); text-align: center; }
-  .hero-composer { width: 100%; max-width: 760px; }
+  .hero-composer { width: 100%; max-width: 760px; margin-top: auto; }
   /* 归属状态栏两处的对齐槽：与输入框卡片同宽同轴（.composer-wrap 整层 pointer-events:none，
      故聊天态这一槽要自己把事件收回来，否则芯片点不动）。 */
   .hero-chips { width: 100%; max-width: 760px; }

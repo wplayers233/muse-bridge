@@ -24,7 +24,8 @@
   const chat = $derived(cliChat.zcode);
   const st = $derived(statusOf('zcode'));
   const dark = $derived(ui.theme !== 'light');
-  const bg = $derived(dark ? '#161616' : '#F8F8F8');
+  // 跟 Claude 页同一套全局配色（app.css 的 --bg token）：不再走 Z.ai 的定制底。
+  const bg = $derived(dark ? '#1f1f1e' : '#f8f8f6');
 
   // 侧栏：窄屏是抽屉（菜单按钮开合、点 scrim 关），宽屏常驻。用本页自己的开关，
   // 不动 ui.drawerOpen（那是 Claude 页的）。
@@ -85,7 +86,7 @@
   }
 </script>
 
-<div class="zc-shell" style:--zc-bg={bg}>
+<div class="zc-shell" style:--zc-bg={bg} style:--agent-accent="#5B6CFF">
   <div class="zc-root">
   <header class="zc-top">
     <div class="zc-left">
@@ -144,12 +145,13 @@
               <button class="zc-btn" onclick={() => cliNew('zcode')} disabled={chat.busy}>{t('新会话')}</button>
               <button class="zc-btn" onclick={() => loadCliStatus(true)}>{t('重新检测')}</button>
             </div>
-            <!-- 工作台三件套：终端 / 审阅 / 文件，都在这个 agent 的工作目录上 -->
+            <!-- 工作台四件套：终端 / 审阅 / 文件 / 任务，都在这个 agent 的工作目录上 -->
             <div class="zc-row"><span class="zc-k">{t('工作台')}</span>
               <span class="zc-v zc-tools">
                 <button class="zc-btn" onclick={() => cliDockOpen('zcode', 'review')}>{tc('zcode', '审阅')}</button>
                 <button class="zc-btn" onclick={() => cliDockOpen('zcode', 'term')}>{tc('zcode', '终端')}</button>
                 <button class="zc-btn" onclick={() => cliDockOpen('zcode', 'files')}>{tc('zcode', '文件')}</button>
+                <button class="zc-btn" onclick={() => cliDockOpen('zcode', 'tasks')}>{tc('claude', '任务')}</button>
               </span>
             </div>
           {:else}
@@ -228,6 +230,9 @@
       <button class="d-item" onclick={() => { cliDockOpen('zcode', 'files'); nav = false; }}>
         <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2a1.5 1.5 0 0 1 1.5-1.5h3l1.4 1.7h6.6a1.5 1.5 0 0 1 1.5 1.5v6.4a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5V6.2Z"/></svg></span>{t('文件')}
       </button>
+      <button class="d-item" onclick={() => { cliDockOpen('zcode', 'tasks'); nav = false; }}>
+        <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h12M4 10h12M4 15h8"/><path d="M13.5 13.5l2 2 3-3.5" stroke-width="1.4"/></svg></span>{tc('claude', '任务')}
+      </button>
     </div>
 
     <div class="d-spacer"></div>
@@ -249,11 +254,11 @@
 
 {#snippet hero()}
   <div class="zc-hello">
-    <span class="zc-hello-mark" aria-hidden="true">
+    <span class="zc-hello-mark hero-mark" aria-hidden="true">
       <svg viewBox="0 0 256 218" fill="currentColor"><path d="M249.6 0.13L116.48 25.6022C113.665 29.5699 109.054 32.0019 104.064 32.0019H6.3999V0H249.6Z"/><path d="M249.6 0.13L102.401 217.732H0L153.599 0.13H249.6Z"/><path d="M121.601 217.732L139.65 192.134C142.465 188.166 147.076 185.734 152.067 185.734H249.604V217.736H121.601V217.732Z"/></svg>
     </span>
     <h1>{greet}</h1>
-    {#if cwd}<div class="zc-hello-cwd mono">{cwd}</div>{/if}
+    {#if cwd}<div class="zc-hello-cwd hero-sub">{cwd}</div>{/if}
   </div>
 {/snippet}
 
@@ -319,10 +324,11 @@
   .zc-btn:active { background: var(--card); }
 
   /* —— 空态问候（照 Claude 页的 .greeting：图标 + 一行大字）—— */
-  .zc-hello { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .zc-hello { display: flex; flex-direction: column; align-items: center; gap: 14px; }
   .zc-hello-mark { display: inline-flex; }
-  .zc-hello-mark svg { width: 34px; height: 34px; }
-  .zc-hello h1 { font-size: 26px; font-weight: 300; letter-spacing: .01em; line-height: 1.2; text-align: center; }
+  .zc-hello-mark svg { width: 64px; height: 64px; }
+  /* 问候照 dimensio 用展示衬线 */
+  .zc-hello h1 { font-family: var(--serif-stack, Georgia, serif); font-size: 24px; font-weight: 400; letter-spacing: .01em; line-height: 1.2; text-align: center; }
   .zc-hello-cwd { font-size: 11.5px; color: var(--faint); word-break: break-all; text-align: center; }
 
   /* —— 窄屏抽屉（骨架照 Claude 页；配色走 ZCode 自己的 token）—— */

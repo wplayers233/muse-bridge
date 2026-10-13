@@ -11,10 +11,12 @@
   //   · 深度靠背景对比与描边，不靠大阴影（§537 Elevation）。
   //
   // 状态在 lib/cliChat.svelte.js（模块级，退回主页再进来不丢；会话列表也在那儿）。
-  import { cliChat, cliSend, cliStop, cliStatus, loadCliStatus, statusOf, answerApproval } from '../../lib/cliChat.svelte.js';
+  import { cliChat, cliSend, cliStop, cliNew, cliStatus, loadCliStatus, statusOf, answerApproval, cwdOf,
+    cliModels, modelOf, effortOf, setCliModel } from '../../lib/cliChat.svelte.js';
   import { apiUrl } from '../../lib/server.js';
   import { authHeaders } from '../../lib/api.js';
   import { renderMarkdown } from '../../lib/md.js';
+  import { showToast } from '../../lib/toast.svelte.js';
   import { t, tr } from '../../lib/i18n.js';
 
   // agent: 'codex' | 'zcode'；placeholder：输入栏提示语（各家官方口吻，外层给）；
@@ -68,10 +70,26 @@
   function send() {
     const text = draft.trim();
     if (!text || chat.busy || !ready) return;
-    draft = '';
-    cliSend(agent, text);
+    const imgs = agent === 'codex' ? atts : [];
+    draft = ''; atts = []; mOpen = false; mItems = [];
+    cliSend(agent, text, imgs);
   }
   function onKey(e) {
+    // @ 提及菜单优先（开着时方向键/回车都在菜单里），其次 / 命令菜单
+    if (mOpen && mItems.length && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key)) {
+      e.preventDefault();
+      if (e.key === 'Escape') { mOpen = false; mItems = []; return; }
+      if (e.key === 'ArrowDown') { mIdx = (mIdx + 1) % mItems.length; return; }
+      if (e.key === 'ArrowUp') { mIdx = (mIdx - 1 + mItems.length) % mItems.length; return; }
+      pickMention(mItems[mIdx]); return;
+    }
+    if (slashOpen && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key)) {
+      e.preventDefault();
+      if (e.key === 'Escape') { draft = ''; return; }
+      if (e.key === 'ArrowDown') { slashIdx = (slashIdx + 1) % slashList.length; return; }
+      if (e.key === 'ArrowUp') { slashIdx = (slashIdx - 1 + slashList.length) % slashList.length; return; }
+      runSlash(slashList[slashIdx]); return;
+    }
     // 触屏设备回车当换行（手机上没有 Shift 组合键，回车发送会误触）；桌面回车发送。
     const touch = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
     if (e.key === 'Enter' && !e.shiftKey && !touch) { e.preventDefault(); send(); }
@@ -86,6 +104,80 @@
     return { update: fit };
   }
   const toolLabel = (s) => (s === 'completed' ? '✓' : s === 'failed' ? '✕' : '•');
+
+  // ── 输入框的 PC 端功能：/ 命令、@ 文件提及、图片附件（codex 走官方 exec -i）──
+  let atts = $state([]);            // 待发的图片 [{name, dataUrl}]
+  let fileEl = $state(null);
+  let taEl = $state(null);
+  const MAX_IMGS = 6, MAX_IMG_MB = 10;
+  function addFiles(files) {
+    for (const f of files) {
+      if (!f) continue;
+      if (atts.length >= MAX_IMGS) { showToast(t('最多附 {n} 张图片', { n: MAX_IMGS }), 'err'); break; }
+      if (f.size > MAX_IMG_MB * 1024 * 1024) { showToast(t('图片太大（单张限 {n}MB）', { n: MAX_IMG_MB }), 'err'); continue; }
+      const r = new FileReader();
+      r.onload = () => { atts = [...atts, { name: f.name || 'image.png', dataUrl: String(r.result) }]; };
+      r.readAsDataURL(f);
+    }
+  }
+  function onPaste(e) {
+    const imgs = [...(e.clipboardData?.items || [])].filter((i) => i.type.startsWith('image/'));
+    if (imgs.length && agent === 'codex') { e.preventDefault(); addFiles(imgs.map((i) => i.getAsFile()).filter(Boolean)); }
+  }
+
+  // / 命令菜单（客户端本地命令，与 PC 端 TUI 的斜杠习惯一致）
+  const SLASH = [
+    { cmd: '/new',  desc: () => t('开一段新会话'), run: () => cliNew(agent) },
+    { cmd: '/stop', desc: () => t('停止这一轮'),   run: () => cliStop(agent) },
+    { cmd: '/help', desc: () => t('显示这些命令'), run: () => showToast(t('命令：/new 新会话 · /stop 停止 · @ 引用文件'), 'ok') },
+  ];
+  let slashIdx = $state(0);
+  const slashQuery = $derived(/^\/(\S*)$/.test(draft.trim()) ? draft.trim().slice(1).toLowerCase() : null);
+  const slashList = $derived(slashQuery == null ? [] : SLASH.filter((c) => c.cmd.slice(1).startsWith(slashQuery)));
+  const slashOpen = $derived(slashList.length > 0 && !chat.busy);
+  $effect(() => { void slashQuery; slashIdx = 0; });
+  function runSlash(c) { c.run(); draft = ''; }
+
+  // @ 文件提及：从服务端列工作目录（/api/files 支持 path + 按名筛选），选中插入 @相对路径
+  let mItems = $state([]); let mOpen = $state(false); let mToken = $state(''); let mIdx = $state(0); let mTimer = 0;
+  $effect(() => { void mToken; mIdx = 0; });
+  function caretToken(el) {
+    const pos = el.selectionStart ?? el.value.length;
+    const m = /@([\w./\\-]*)$/.exec(el.value.slice(0, pos));
+    return m ? m[1] : null;
+  }
+  function onInput() {
+    const el = taEl; if (!el) return;
+    const tok = caretToken(el);
+    mToken = tok ?? '';
+    mOpen = tok != null;
+    clearTimeout(mTimer);
+    if (tok != null) mTimer = setTimeout(loadFiles, 160);
+    else mItems = [];
+  }
+  async function loadFiles() {
+    const ws = cwdOf(agent);
+    if (!ws) { mItems = []; return; }
+    const q = mToken || '';
+    const slash = q.lastIndexOf('/');
+    const dirPart = slash >= 0 ? q.slice(0, slash) : '';
+    const namePart = slash >= 0 ? q.slice(slash + 1) : q;
+    try {
+      const u = apiUrl(`/api/files?ws=${encodeURIComponent(ws)}&path=${encodeURIComponent(dirPart)}&q=${encodeURIComponent(namePart)}`);
+      const r = await fetch(u, { headers: authHeaders(), credentials: 'same-origin' });
+      if (!r.ok) { mItems = []; return; }
+      const j = await r.json();
+      mItems = (j.items || []).slice(0, 8).map((x) => ({ rel: (dirPart ? dirPart + '/' : '') + x.name, dir: !!(x.dir || x.type === 'dir' || x.isDirectory) }));
+    } catch { mItems = []; }
+  }
+  function pickMention(it) {
+    const el = taEl; if (!el) return;
+    const pos = el.selectionStart ?? el.value.length;
+    const before = el.value.slice(0, pos).replace(/@[\w./\\-]*$/, '@' + it.rel + ' ');
+    draft = before + el.value.slice(pos);
+    mOpen = false; mItems = [];
+    queueMicrotask(() => { el.focus(); el.setSelectionRange(before.length, before.length); });
+  }
 
   // 审批按钮的文案。上游给的是一串英文枚举（accept / acceptForSession / decline / cancel），
   // 认不出的原样显示（上游哪天加新决策也不会变成一个空按钮）。
@@ -130,63 +222,51 @@
   }
 </script>
 
-<div class="cli-chat" class:centered={empty}>
-  {#if !ready}
-    <!-- —— 接入卡：分页把「缺什么、怎么补」摊开，装好之后不用重启服务 —— -->
-    <div class="gate">
-      <div class="gate-card">
-        <div class="gate-title">{t('把 {name} 接到这台机器上', { name: st?.label || agent })}</div>
-        <div class="gate-why">
+<div class="cli-chat">
+  <div class="stage" class:feedmode={!empty}>
+    {#if empty}
+      {#if hero}{@render hero()}{/if}
+      {#if !ready}
+        <!-- 接入提示照 dimensio 空态：弱化的 chip（细节在侧栏「接入」里），不再是整张卡 -->
+        <div class="notes">
           {#if notInstalled}
-            {t('这台机器上还没装它的命令行工具。装好、登录一次，这个分页就能直接对话。')}
+            <button class="chip click" disabled={installing} onclick={installNow}>
+              <span>{installing ? t('安装中…') : t('还没装命令行工具 · 点这里安装')}</span>
+            </button>
+            {#if install}<code class="chip-cmd">{install}</code>{/if}
+            {#if installMsg}<div class="chip-msg">{tr(installMsg)}</div>{/if}
           {:else if needAuth}
-            {t('命令行工具已经装好了，但还没登录。登录一次就能开始。')}
-          {:else}
-            {t('正在读取状态…')}
+            <div class="chip">{t('装好了，还没登录')}</div>
+            {#if login}
+              <button class="chip click" onclick={() => copy(login, 'login')}>
+                <code>{login}</code>
+                <span>{copied === 'login' ? t('已复制') : t('复制')}</span>
+              </button>
+            {/if}
+            {#if st?.keyEnv}
+              <div class="chip-msg">{t('也可以在「设置 → Agent」里给它填一把 API key（服务器上加密保存，只回显尾 4 位），不用上机登录。')}</div>
+            {:else if login}
+              <div class="chip-msg">{t('登录会在服务器上留下凭据，之后这个分页就一直能用；不想上机的话，去「设置 → Agent → 去配置」也能看到这条命令。')}</div>
+            {/if}
+          {:else if !st || cliStatus.loading}
+            <div class="chip">{t('正在读取状态…')}</div>
           {/if}
-        </div>
-        {#if notInstalled && install}
-          <div class="gate-row">
-            <div class="gate-k">{t('安装')}</div>
-            <code class="gate-cmd">{install}</code>
-            <button class="mini" onclick={() => copy(install, 'install')} aria-label={t('复制')}>{copied === 'install' ? t('已复制') : t('复制')}</button>
-            <!-- 一步装上：走服务端 /api/admin/agent-install（只认表里的官方命令；非管理员会 404，照旧手装） -->
-            <button class="mini" disabled={installing} onclick={installNow}>{installing ? t('安装中…') : t('点这里直接装')}</button>
+          {#if st?.note}<div class="chip-msg">{tr(st.note)}</div>{/if}
+          {#if cliStatus.err}<div class="chip-msg err">{tr(cliStatus.err)}</div>{/if}
+          <div class="chip-foot">
+            <button class="mini" onclick={() => loadCliStatus(true)}>{t('重新检测')}</button>
+            {#if docUrl}<a class="mini link" href={docUrl} target="_blank" rel="noreferrer">{t('官方文档')}</a>{/if}
           </div>
-        {/if}
-        {#if needAuth && login}
-          <div class="gate-row">
-            <div class="gate-k">{t('登录')}</div>
-            <code class="gate-cmd">{login}</code>
-            <button class="mini" onclick={() => copy(login, 'login')} aria-label={t('复制')}>{copied === 'login' ? t('已复制') : t('复制')}</button>
-          </div>
-        {/if}
-        {#if needAuth && st?.keyEnv}
-          <div class="gate-why">{t('也可以在「设置 → Agent」里给它填一把 API key（服务器上加密保存，只回显尾 4 位），不用上机登录。')}</div>
-        {:else if needAuth && login}
-          <div class="gate-why">{t('登录会在服务器上留下凭据，之后这个分页就一直能用；不想上机的话，去「设置 → Agent → 去配置」也能看到这条命令。')}</div>
-        {/if}
-        <div class="gate-foot">
-          <button class="mini" onclick={() => loadCliStatus(true)}>{t('重新检测')}</button>
-          {#if docUrl}<a class="mini link" href={docUrl} target="_blank" rel="noreferrer">{t('官方文档')}</a>{/if}
-          {#if cliStatus.err}<span class="gate-err">{tr(cliStatus.err)}</span>{/if}
-          {#if installMsg}<span class="gate-msg">{tr(installMsg)}</span>{/if}
         </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if empty && hero}
-    <!-- 空态（照 Claude 页）：大问候在上、输入栏居中在下，两侧同宽同轴 -->
-    <div class="stage">
-      {@render hero()}
-      <div class="stage-composer">{@render composer(false)}</div>
-    </div>
-  {:else}
+      {/if}
+    {:else}
     <div class="feed" bind:this={feedEl}>
       {#each chat.items as m (m.id)}
         {#if m.role === 'user'}
-          <div class="row user"><div class="bubble user">{m.text}</div></div>
+          <div class="row user">
+            {#if m.imgs}<div class="uimgs">📎 {m.imgs}</div>{/if}
+            <div class="bubble user">{m.text}</div>
+          </div>
         {:else}
           <div class="row agent">
             {#if m.reasoning}
@@ -277,8 +357,9 @@
         {/if}
       {/each}
     </div>
-    {@render composer(true)}
-  {/if}
+    {/if}
+  </div>
+  {@render composer(!empty)}
 </div>
 
 {#snippet composer(bottom)}
@@ -286,26 +367,118 @@
     {#if chat.sessionId && bottom}
       <div class="sess"><span>{t('会话')}</span><code>{chat.sessionId}</code></div>
     {/if}
-    <div class="box">
-      <textarea class="ta" bind:value={draft} {placeholder} rows="1" use:autoGrow onkeydown={onKey} disabled={!ready}></textarea>
-      {#if chat.busy}
-        <button class="send stop" onclick={() => cliStop(agent)} aria-label={t('停止')}>
-          <svg viewBox="0 0 20 20" fill="currentColor"><rect x="6" y="6" width="8" height="8" rx="1.5"/></svg>
-        </button>
-      {:else}
-        <button class="send" onclick={send} disabled={!ready || !draft.trim()} aria-label={t('发送')}>
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15.5V5M10 5l-4 4M10 5l4 4"/></svg>
-        </button>
+    <!-- 输入卡照 dimensio：上层纯输入，下层控制条（左：+附件 / 工作目录；右：模型胶囊 + 圆形发送钮） -->
+    <div class="boxwrap">
+      {#if slashOpen}
+        <div class="menu">
+          {#each slashList as c, i (c.cmd)}
+            <button class="mi" class:on={i === slashIdx} onclick={() => runSlash(c)}>
+              <code>{c.cmd}</code><span>{c.desc()}</span>
+            </button>
+          {/each}
+        </div>
+      {:else if mOpen && mItems.length}
+        <div class="menu">
+          {#each mItems as it, i (it.rel)}
+            <button class="mi" class:on={i === mIdx} onclick={() => pickMention(it)}>
+              <span class="mico">{it.dir ? '▸' : '·'}</span><span class="mpath">{it.rel}</span>
+            </button>
+          {/each}
+        </div>
       {/if}
+      {#if atts.length}
+        <div class="atts">
+          {#each atts as a, i (i + a.name)}
+            <span class="att">
+              <img src={a.dataUrl} alt={a.name} />
+              <button class="att-x" onclick={() => atts = atts.filter((_, j) => j !== i)} aria-label={t('移除')}>×</button>
+            </span>
+          {/each}
+        </div>
+      {/if}
+      <div class="box">
+        <textarea class="ta" bind:this={taEl} bind:value={draft} {placeholder} rows="1" use:autoGrow
+          oninput={onInput} onpaste={onPaste} onkeydown={onKey} disabled={!ready}></textarea>
+        <div class="bar">
+          {#if agent === 'codex'}
+            <button class="plus" onclick={pickFiles} disabled={!ready} aria-label={t('附图片')} title={t('附图片')}>
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10 4.5v11M4.5 10h11"/></svg>
+            </button>
+            <input type="file" bind:this={fileEl} accept="image/*" multiple hidden
+              onchange={(e) => { addFiles([...e.currentTarget.files]); e.currentTarget.value = ''; }} />
+          {/if}
+          {#if cwdOf(agent)}
+            <span class="cwd mono" title={cwdOf(agent)}>{cwdOf(agent).split(/[\\/]/).filter(Boolean).pop()}</span>
+          {/if}
+          <span class="bspacer"></span>
+          {#if agent === 'codex' && (cliModels.list || []).filter((m) => !m.hidden).length}
+            <select class="pill" value={modelOf('codex')} onchange={(e) => setCliModel('codex', { model: e.currentTarget.value, effort: '' })} aria-label={t('模型')}>
+              <option value="">{t('用 codex 自己的配置')}</option>
+              {#each cliModels.list.filter((m) => !m.hidden) as m (m.id)}
+                <option value={m.id}>{m.label || m.id}</option>
+              {/each}
+            </select>
+            {#if modelOf('codex') && effortOf('codex') !== ''}
+              <select class="pill" value={effortOf('codex')} onchange={(e) => setCliModel('codex', { model: modelOf('codex'), effort: e.currentTarget.value })} aria-label={t('思考深度')}>
+                <option value="">{t('默认')}</option>
+                {#each ((cliModels.list || []).find((m) => m.id === modelOf('codex'))?.efforts || []) as v (v)}
+                  <option value={v}>{v}</option>
+                {/each}
+              </select>
+            {/if}
+          {/if}
+          {#if chat.busy}
+            <button class="send stop" onclick={() => cliStop(agent)} aria-label={t('停止')}>
+              <svg viewBox="0 0 20 20" fill="currentColor"><rect x="6" y="6" width="8" height="8" rx="1.5"/></svg>
+            </button>
+          {:else}
+            <button class="send" onclick={send} disabled={!ready || !draft.trim()} aria-label={t('发送')}>
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15.5V5M10 5l-4 4M10 5l4 4"/></svg>
+            </button>
+          {/if}
+        </div>
+      </div>
     </div>
   </div>
 {/snippet}
 
 <style>
   .cli-chat { display: flex; flex-direction: column; min-height: 0; height: 100%; }
-  /* 空态：整块居中（问候 + 输入栏），对话态才是「流 + 贴底输入栏」 */
-  .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 0 4px 8vh; }
-  .stage-composer { width: 100%; max-width: 720px; }
+  /* 空态照 dimensio：标志 + 问候坐在视觉中心略上（底部留 7vh），接入提示弱化成 chip；
+     输入栏恒在底栏（对话态同一根 stage，内容换成消息流）。 */
+  .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 12px 7vh; overflow-y: auto; }
+  .stage.feedmode { justify-content: flex-start; padding: 0; overflow: hidden; }
+
+  /* 入场动画（时长/节奏对齐 dimensio 标志 intro：INTRO_MS=1850，弹簧过冲回正）：
+     标志旋入摆正，问候与提示随后上浮（dimensio h1 delay=120ms）；减弱动效只留淡入 */
+  .stage :global(.hero-mark svg) { animation: cliMarkIn 1850ms cubic-bezier(.22, 1, .36, 1) both; transform-origin: 50% 50%; }
+  .stage :global(.hero h1) { animation: cliRiseIn .42s .12s cubic-bezier(.22, 1, .36, 1) both; }
+  .stage :global(.hero .hero-sub) { animation: cliRiseIn .42s .2s cubic-bezier(.22, 1, .36, 1) both; }
+  @keyframes cliMarkIn {
+    0% { opacity: 0; transform: rotate(-120deg) scale(.5); }
+    55% { opacity: 1; }
+    70% { transform: rotate(8deg) scale(1.06); }
+    85% { transform: rotate(-3deg) scale(.99); }
+    100% { opacity: 1; transform: rotate(0deg) scale(1); }
+  }
+  @keyframes cliRiseIn { from { opacity: 0; transform: translateY(10px); } }
+  @media (prefers-reduced-motion: reduce) {
+    .stage :global(.hero-mark svg), .stage :global(.hero h1), .stage :global(.hero .hero-sub) { animation-duration: .01s; animation-delay: 0s; }
+  }
+
+  /* 接入提示 chip（dimensio 式弱化，细节在侧栏「接入」） */
+  .notes { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 26px; max-width: 520px; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 12px; font-size: 13px;
+    line-height: 1.5; color: var(--faint, #8a8a86); background: color-mix(in srgb, currentColor 7%, transparent); text-align: left; }
+  .chip.click { color: inherit; }
+  .chip.click:active { background: color-mix(in srgb, var(--agent-accent, currentColor) 16%, transparent); }
+  @media (hover: hover) { .chip.click:hover { background: color-mix(in srgb, var(--agent-accent, currentColor) 14%, transparent); } }
+  .chip code { font-family: var(--mono, monospace); font-size: 12px; }
+  .chip-cmd { max-width: 100%; overflow-x: auto; white-space: nowrap; font-family: var(--mono, monospace); font-size: 12px;
+    opacity: .7; padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, currentColor 6%, transparent); }
+  .chip-msg { font-size: 12px; color: var(--faint, #8a8a86); line-height: 1.6; text-align: center; }
+  .chip-msg.err { color: var(--danger, #c0392b); }
+  .chip-foot { display: flex; gap: 8px; margin-top: 2px; }
 
   .feed { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 4px 16px; overscroll-behavior: contain; }
   .row { padding: 6px 0; display: flex; flex-direction: column; gap: 6px; }
@@ -377,7 +550,7 @@
   .apbtns { display: flex; gap: 8px; flex-wrap: wrap; }
   .apbtn { font-size: 12.5px; padding: 6px 12px; border-radius: 8px; color: inherit;
     border: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
-  .apbtn.primary { background: color-mix(in srgb, currentColor 14%, transparent); font-weight: 600; }
+  .apbtn.primary { background: color-mix(in srgb, var(--agent-accent, currentColor) 18%, transparent); font-weight: 600; }
   .apbtn.danger { color: var(--danger, #c0392b); border-color: color-mix(in srgb, var(--danger, #c0392b) 40%, transparent); }
   .apbtn:disabled { opacity: .5; }
 
@@ -394,22 +567,29 @@
   .err-hint { font-size: 12.5px; color: var(--faint, #8a8a86); line-height: 1.6; }
   .err-hint::before { content: '→ '; opacity: .7; }
 
-  .composer { flex: none; padding: 8px 2px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .composer { flex: none; width: 100%; max-width: 760px; margin: 0 auto; padding: 8px 2px 12px; display: flex; flex-direction: column; gap: 6px; }
   .composer.bottom { padding-bottom: calc(12px + var(--sab, 0px)); }
   .sess { display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--faint, #8a8a86); }
   .sess code { font-family: var(--mono, monospace); font-size: 11px; opacity: .8; }
-  .box { display: flex; align-items: flex-end; gap: 8px; }
-  /* 主输入壳：官方点名的 rounded-2xl 例外（DESIGN.md §366 Approved 2xl exceptions） */
-  .ta { flex: 1; min-width: 0; resize: none; font: inherit; font-size: 15px; line-height: 1.5;
-    padding: 12px 14px; border-radius: 16px; border: 1px solid var(--line, #3a3a38);
-    background: color-mix(in srgb, currentColor 5%, transparent); color: var(--text, #eee); outline: none; }
+  /* 输入卡照 dimensio：一层圆角壳包住「纯输入区 + 控制条」，壳内不再有第二道边框 */
+  .box { display: flex; flex-direction: column; border: 1px solid var(--line, #3a3a38); border-radius: 18px;
+    background: color-mix(in srgb, currentColor 5%, transparent); padding: 4px 6px 6px; }
+  .ta { width: 100%; resize: none; font: inherit; font-size: 15px; line-height: 1.5;
+    padding: 10px 10px 6px; border: none; background: transparent; color: var(--text, #eee); outline: none; }
   .ta::placeholder { color: var(--faint, #8a8a86); }
-  .ta:focus { border-color: color-mix(in srgb, currentColor 34%, transparent); }
-  .ta:disabled { opacity: .5; }
-  /* 发送钮照官方那枚方形箭头（尺寸跟输入壳的圆角档配） */
-  .send { flex: none; width: 40px; height: 40px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center;
-    background: var(--text, #eee); color: var(--bg, #1b1b19); }
-  .send svg { width: 19px; height: 19px; }
+  .box:focus-within { border-color: color-mix(in srgb, var(--agent-accent, currentColor) 45%, transparent); }
+  .box:has(.ta:disabled) { opacity: .5; }
+  /* 控制条：左工作目录、右模型胶囊 + 圆形发送钮（dimensio 同构） */
+  .bar { display: flex; align-items: center; gap: 8px; padding: 2px 4px 2px 8px; }
+  .cwd { font-size: 11.5px; color: var(--faint, #8a8a86); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 45%; }
+  .bspacer { flex: 1; }
+  .pill { font: inherit; font-size: 12px; padding: 4px 9px; border-radius: 999px; border: none; color: inherit;
+    background: color-mix(in srgb, currentColor 8%, transparent); max-width: 180px; text-overflow: ellipsis; }
+  .pill option { color: #111; background: #fff; }
+  /* 圆形发送钮（dimensio 同款），accent 随各家（Codex 绿 / ZCode 蓝） */
+  .send { flex: none; width: 32px; height: 32px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+    background: var(--agent-accent, var(--text, #eee)); color: #fff; }
+  .send svg { width: 17px; height: 17px; }
   .send:disabled { opacity: .35; }
   .send.stop { background: var(--danger, #c0392b); color: #fff; }
 
@@ -417,16 +597,27 @@
   .mini.link { text-decoration: none; }
   .mini:active { opacity: .6; }
 
-  /* 接入卡 */
-  .gate { flex: none; padding: 4px 2px 0; }
-  .gate-card { border: 1px solid var(--line, #3a3a38); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
-  .gate-title { font-size: 15px; font-weight: 500; }
-  .gate-why { font-size: 13px; color: var(--faint, #8a8a86); line-height: 1.6; }
-  .gate-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .gate-k { font-size: 12px; color: var(--faint, #8a8a86); width: 34px; flex: none; }
-  .gate-cmd { flex: 1; min-width: 0; overflow-x: auto; font-family: var(--mono, monospace); font-size: 12px;
-    background: color-mix(in srgb, currentColor 8%, transparent); padding: 6px 8px; border-radius: 8px; white-space: nowrap; }
-  .gate-foot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .gate-err { font-size: 12px; color: var(--danger, #c0392b); }
-  .gate-msg { font-size: 12px; color: var(--faint, #8a8a86); word-break: break-word; }
+  /* 控制条左端的 ＋（codex 图片附件入口） */
+  .plus { flex: none; width: 28px; height: 28px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; color: inherit; opacity: .65; }
+  .plus svg { width: 16px; height: 16px; }
+  .plus:active { opacity: 1; background: color-mix(in srgb, currentColor 10%, transparent); }
+  .plus:disabled { opacity: .3; }
+  /* 待发图片缩略条 + 弹出菜单（/ 命令 与 @ 提及共用一层） */
+  .atts { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 2px 8px; }
+  .att { position: relative; display: inline-flex; }
+  .att img { width: 46px; height: 46px; object-fit: cover; border-radius: 8px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); }
+  .att-x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; font-size: 12px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center; background: var(--text, #eee); color: var(--bg, #1b1b19); }
+  .uimgs { font-size: 11.5px; opacity: .6; }
+  .menu { position: absolute; bottom: calc(100% + 8px); left: 0; min-width: 260px; max-width: 100%; z-index: 20;
+    display: flex; flex-direction: column; padding: 4px; border-radius: 12px; overflow: hidden;
+    border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+    background: var(--card, #2c2c2a); box-shadow: 0 8px 28px rgba(0,0,0,.35); }
+  .mi { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; font-size: 13px; color: inherit; text-align: left; }
+  .mi.on, .mi:active { background: color-mix(in srgb, var(--agent-accent, currentColor) 14%, transparent); }
+  .mi code { font-family: var(--mono, monospace); font-size: 12.5px; font-weight: 600; }
+  .mi span { opacity: .6; font-size: 12px; }
+  .mico { width: 14px; flex: none; opacity: .5; }
+  .mpath { font-family: var(--mono, monospace); font-size: 12.5px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .boxwrap { position: relative; }
 </style>

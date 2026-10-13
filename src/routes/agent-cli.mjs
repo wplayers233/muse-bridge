@@ -21,6 +21,31 @@ import { CLI_AGENTS, CLI_MISSING_NOTE, runCliTurn } from '../runtime/agent-cli.m
 import { runAppServerTurn, appServerAvailable } from '../runtime/agent-appserver.mjs';
 import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs } from '../runtime/cli-cwd.mjs';
 import { codexModels } from '../runtime/agent-models.mjs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
+// 图片附件（codex：官方 exec 的 -i/--image 同款能力）。客户端传来 base64 裸数据，
+// 落到工作目录的 .bridge-uploads/ 下再交路径给 CLI。限 6 张、单张解码后 ≤ 10MB。
+const MAX_IMAGES = 6;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+async function saveImages(cwd, images) {
+  const list = Array.isArray(images) ? images.slice(0, MAX_IMAGES) : [];
+  if (!list.length) return [];
+  const dir = path.join(cwd, '.bridge-uploads');
+  await mkdir(dir, { recursive: true });
+  const stamp = Date.now().toString(36);
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const raw = String(list[i]?.data || '');
+    if (!raw) continue;
+    if (raw.length > (MAX_IMAGE_BYTES / 3) * 4) throw Object.assign(new Error('图片太大（单张限 10MB）'), { status: 413 });
+    const name = String(list[i]?.name || 'image.png').replace(/[\\/:*?"<>|]/g, '_').slice(-80) || 'image.png';
+    const file = path.join(dir, `${stamp}-${i}-${name}`);
+    await writeFile(file, Buffer.from(raw, 'base64'));
+    out.push(file);
+  }
+  return out;
+}
 
 const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); };
 
@@ -120,6 +145,13 @@ export function registerAgentCliRoutes(router, { identify }) {
       // model / effort：codex 的模型与思考深度（分页的选择器里选的；zcode 没有这两个参数）。
       const prefs = getCliPrefs(ctx, agent);
       const cwd = prefs.cwd;
+      // 图片附件：codex 走官方 -i；有图时强制走 exec 路（app-server 这条传输还不收附件）。
+      let images = [];
+      if (Array.isArray(body.images) && body.images.length) {
+        if (agent !== 'codex') return json(res, 400, { error: '这个 agent 暂不支持图片附件' });
+        try { images = await saveImages(cwd, body.images); }
+        catch (e) { return json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) }); }
+      }
       const ac = new AbortController();
       let gone = false;
       // 客户端断开 → 立刻 abort（generator 那边按进程组杀 CLI 的整棵树）。
@@ -134,14 +166,14 @@ export function registerAgentCliRoutes(router, { identify }) {
       const turnKey = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
       try {
         // codex 有 app-server 就走新路：审批、会话托管、流式正文全在里面（见 runtime/agent-appserver.mjs）。
-        // 老版本没有这个子命令就回落 exec（老路还能用，只是没有审批卡）。
-        const useAppServer = agent === 'codex' && await appServerAvailable();
+        // 老版本没有这个子命令就回落 exec（老路还能用，只是没有审批卡）。带图片时走 exec（-i 是它的原生参数）。
+        const useAppServer = agent === 'codex' && !images.length && await appServerAvailable();
         const stream = useAppServer
           ? runAppServerTurn(agent, {
             prompt, threadId: sessionId, cwd, model: prefs.model, effort: prefs.effort, signal: ac.signal,
             onServerRequest: (method, params, approvalId) => waitForApproval(turnKey, approvalId),
           })
-          : runCliTurn(agent, { prompt, sessionId, cwd, model: prefs.model, effort: prefs.effort, signal: ac.signal });
+          : runCliTurn(agent, { prompt, sessionId, cwd, model: prefs.model, effort: prefs.effort, images, signal: ac.signal });
         for await (const ev of stream) {
           if (gone) break;
           // 审批卡的 id 加上这一轮的前缀：同名 id 在不同轮之间不会撞（app-server 内部从 1 开始数）。

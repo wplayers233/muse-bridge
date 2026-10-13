@@ -22,8 +22,8 @@
   const st = $derived(statusOf('codex'));
   const dark = $derived(ui.theme !== 'light');
 
-  // 这一页有自己的底色（不跟全局 --bg）：同 dimensio 分页，把配色报给 App 的 theme-color meta。
-  const bg = $derived(dark ? '#0E0E0C' : '#FFFFFF');
+  // 这一页跟 Claude 页同一套全局配色（app.css 的 --bg token）：不再走 Codex 官方的近黑定制底。
+  const bg = $derived(dark ? '#1f1f1e' : '#f8f8f6');
 
   let nav = $state(false);
   let wide = $state(false);
@@ -113,7 +113,7 @@
   }
 </script>
 
-<div class="cx-shell" style:--cx-bg={bg}>
+<div class="cx-shell" style:--cx-bg={bg} style:--agent-accent="#10a37f">
 <div class="cx-root">
   <header class="cx-top">
     <div class="cx-left">
@@ -173,12 +173,13 @@
               <button class="cx-btn" onclick={() => cliNew('codex')} disabled={chat.busy}>{t('新会话')}</button>
               <button class="cx-btn" onclick={() => loadCliStatus(true)}>{t('重新检测')}</button>
             </div>
-            <!-- 工作台三件套：终端 / 审阅 / 文件，都在这个 agent 的工作目录上 -->
+            <!-- 工作台四件套：终端 / 审阅 / 文件 / 任务，都在这个 agent 的工作目录上 -->
             <div class="cx-row"><span class="cx-k">{t('工作台')}</span>
               <span class="cx-v cx-tools">
                 <button class="cx-btn" onclick={() => cliDockOpen('codex', 'review')}>{tc('codex', '审阅')}</button>
                 <button class="cx-btn" onclick={() => cliDockOpen('codex', 'term')}>{tc('codex', '终端')}</button>
                 <button class="cx-btn" onclick={() => cliDockOpen('codex', 'files')}>{tc('codex', '文件')}</button>
+                <button class="cx-btn" onclick={() => cliDockOpen('codex', 'tasks')}>{tc('claude', '任务')}</button>
               </span>
             </div>
           {:else}
@@ -259,6 +260,9 @@
       <button class="d-item" onclick={() => { cliDockOpen('codex', 'files'); nav = false; }}>
         <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2a1.5 1.5 0 0 1 1.5-1.5h3l1.4 1.7h6.6a1.5 1.5 0 0 1 1.5 1.5v6.4a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5V6.2Z"/></svg></span>{t('文件')}
       </button>
+      <button class="d-item" onclick={() => { cliDockOpen('codex', 'tasks'); nav = false; }}>
+        <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h12M4 10h12M4 15h8"/><path d="M13.5 13.5l2 2 3-3.5" stroke-width="1.4"/></svg></span>{tc('claude', '任务')}
+      </button>
     </div>
 
     <div class="d-spacer"></div>
@@ -310,11 +314,11 @@
 
 {#snippet hero()}
   <div class="cx-hello">
-    <span class="cx-hello-mark" aria-hidden="true">
+    <span class="cx-hello-mark hero-mark" aria-hidden="true">
       <svg viewBox="0 0 32 32" fill="none"><path d="M22.356 19.797H17.17M9.662 12.29l1.979 3.576a.511.511 0 0 1-.005.504l-1.974 3.409M30.758 16c0 8.15-6.607 14.758-14.758 14.758-8.15 0-14.758-6.607-14.758-14.758C1.242 7.85 7.85 1.242 16 1.242c8.15 0 14.758 6.608 14.758 14.758Z" stroke="currentColor" stroke-linecap="round" stroke-width="2.484"/></svg>
     </span>
     <h1>{greet}</h1>
-    {#if cwd}<div class="cx-hello-cwd mono">{cwd}</div>{/if}
+    {#if cwd}<div class="cx-hello-cwd hero-sub">{cwd}</div>{/if}
   </div>
 {/snippet}
 
@@ -333,7 +337,7 @@
   .cx-left, .cx-right { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .cx-mark { display: inline-flex; width: 22px; height: 22px; }
   .cx-mark svg { width: 22px; height: 22px; }
-  .cx-word { font-family: var(--mono, ui-monospace, monospace); font-size: 15px; letter-spacing: .02em; font-weight: 500; }
+  .cx-word { font-size: 15px; letter-spacing: .02em; font-weight: 500; }
   .cx-chip { font-size: 11px; padding: 3px 8px; border-radius: 999px; white-space: nowrap;
     border: 1px solid color-mix(in srgb, currentColor 18%, transparent); opacity: .7; }
   .cx-chip.ok { opacity: 1; }
@@ -378,10 +382,11 @@
   /* 工作台三件套那几个按钮：在「键 值」行里横排，别被 word-break 拆开 */
   .cx-tools { display: flex; gap: 6px; flex-wrap: wrap; }
 
-  .cx-hello { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .cx-hello { display: flex; flex-direction: column; align-items: center; gap: 14px; }
   .cx-hello-mark { display: inline-flex; }
-  .cx-hello-mark svg { width: 36px; height: 36px; }
-  .cx-hello h1 { font-family: var(--mono, ui-monospace, monospace); font-weight: 400; font-size: 21px; line-height: 1.2; text-align: center; letter-spacing: .01em; }
+  .cx-hello-mark svg { width: 64px; height: 64px; }
+  /* 问候保留 Codex 的终端等宽基因（官方 TUI 的识别点），字号对齐 dimensio 空态档 */
+  .cx-hello h1 { font-family: var(--mono, ui-monospace, monospace); font-weight: 400; font-size: 22px; line-height: 1.2; text-align: center; letter-spacing: .02em; }
   .cx-hello-cwd { font-size: 11.5px; opacity: .55; word-break: break-all; text-align: center; }
 
   .cx-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0; visibility: hidden;

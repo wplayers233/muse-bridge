@@ -53,10 +53,12 @@ export const CLI_MISSING_NOTE = {
 //   官方 issue 里也有同样报告），而配置覆盖 exec / resume 都认——同一条参数两种入口都可靠。
 //   放开工作目录里的读写，但仍不下探到工作目录之外、也不放开网络（要更宽得自己改成
 //   danger-full-access）。
-export function buildArgs(agent, { prompt, sessionId = '', cwd = '', model = '', effort = '' } = {}) {
+export function buildArgs(agent, { prompt, sessionId = '', cwd = '', model = '', effort = '', images = [] } = {}) {
   if (agent === 'codex') {
     // 共享选项要写在 exec 的子命令（resume）之前 —— clap 的父级参数只在子命令名之前生效。
     const args = ['exec', '--json', '-c', 'sandbox_mode="workspace-write"', '--skip-git-repo-check'];
+    // 图片附件（PC 端 -i/--image 的同款能力，官方 exec 原生参数）：写在子命令之前。
+    if (Array.isArray(images) && images.length) for (const p of images) args.push('-i', String(p));
     // 模型 / 思考深度：用户在分页里选的那一份（存 runtime/cli-cwd.mjs，空 = 交回 CLI 自己的配置）。
     // 两个都用 -c 覆盖而不是命令行开关：`-m` 只有 exec 认、resume 不认，而 -c 两种入口都吃
     // （同上面 sandbox_mode 的理由）。键名 model / model_reasoning_effort 取自官方配置表。
@@ -405,14 +407,14 @@ export function parseLine(agent, rawLine) {
 // ── 跑一轮 ─────────────────────────────────────────────────────────────────
 // 异步生成器：yield 归一事件。子进程生命期绑在 signal 上（客户端断开就杀——这类 CLI 会一直跑）。
 // 抛错都在事件里给前端说明白，不 reject（调用方只管往 SSE 里写）。
-export async function* runCliTurn(agent, { prompt, sessionId = '', cwd = '', model = '', effort = '', signal = null, env = process.env, binDir = '' } = {}) {
+export async function* runCliTurn(agent, { prompt, sessionId = '', cwd = '', model = '', effort = '', images = [], signal = null, env = process.env, binDir = '' } = {}) {
   if (!CLI_AGENTS.includes(agent)) { yield { type: 'error', message: '未知 agent：' + agent }; return; }
   const searchEnv = binDir ? { ...env, PATH: binDir + ':' + (env.PATH || '') } : env;
   const bin = findCliBin(agent, searchEnv);
   if (!bin) { yield { type: 'error', message: CLI_MISSING_NOTE[agent] || ('没找到 ' + agent + ' 命令') }; return; }
 
   let args;
-  try { args = buildArgs(agent, { prompt, sessionId, cwd, model, effort }); }
+  try { args = buildArgs(agent, { prompt, sessionId, cwd, model, effort, images }); }
   catch (e) { yield { type: 'error', message: (e && e.message) || String(e) }; return; }
 
   yield { type: 'start', agent, sessionId: sessionId || '' };

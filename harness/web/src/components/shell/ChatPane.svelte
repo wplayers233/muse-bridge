@@ -131,14 +131,14 @@
     position: relative;
     z-index: 2;
   }
-  /* 空态居中（桌面）：问候 + 输入框作为一组坐在视觉中线略上 */
+  /* 空态：问候 + 输入框作为一组放在页面上部约 1/4 处（照 claude.ai 官网，不是坐中线） */
   .pane.centered .stage {
     flex: 0 0 auto;
-    margin-top: auto;
+    margin-top: 14vh;
   }
   .pane.centered .bottom {
     margin-bottom: auto;
-    padding-bottom: 10vh;
+    padding-bottom: 0;
   }
   .pane.centered .stage :global(.hero) {
     padding-bottom: 30px;

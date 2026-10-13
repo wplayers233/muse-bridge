@@ -12,6 +12,7 @@
   // 作用域＝这个 agent 的工作目录（分页里的「工作目录」，见服务端 runtime/cli-cwd.mjs）。
   import ReviewPanel from './ReviewPanel.svelte';
   import TermPanel from './TermPanel.svelte';
+  import CliTasksPanel from './CliTasksPanel.svelte';
   import WorkspaceEmbed from './WorkspaceEmbed.svelte';
   import MediaViewer from '../preview/MediaViewer.svelte';
   import { ui } from '../../lib/state.svelte.js';
@@ -25,11 +26,11 @@
   const st = $derived(cliDock[agent]);
   // 门禁：终端要身份有 shell（服务端 dock/meta 的 shell 位）；审阅与文件人人可用。
   const shellOk = $derived(!st.meta || st.meta.shell !== false);
-  const all = ['review', 'term', 'files'];
+  const all = ['review', 'term', 'files', 'tasks'];
   const tools = $derived(all.filter((k) => k !== 'term' || shellOk));
   // 标签走 tc：两家各有自己的说法（codex::文件 / zcode::文件 都是 "Files"，
   // 而「文件」在别处是单数 "File"——见 i18n/en/dock-codex-agy.js）。
-  const LABEL = $derived({ review: tc(agent, '审阅'), term: tc(agent, '终端'), files: tc(agent, '文件') });
+  const LABEL = $derived({ review: tc(agent, '审阅'), term: tc(agent, '终端'), files: tc(agent, '文件'), tasks: tc('claude', '任务') });
 
   // 面板拿的 state：三个面板只读 `ws` 这一个字段（其余自己按 ws 去取）。
   const dockState = $derived({ ws });
@@ -109,6 +110,8 @@
                 {:else}
                   <div class="cd-wait">{t('工作空间加载中…')}</div>
                 {/if}
+              {:else if view === 'tasks'}
+                <CliTasksPanel {agent} />
               {/if}
             {/key}
           {/if}
