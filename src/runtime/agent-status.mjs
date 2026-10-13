@@ -95,10 +95,28 @@ export function findCliBin(name, env = process.env, dirs = cliSearchDirs(env)) {
   for (const d of dirs) {
     for (const n of names) {
       const p = path.join(d, n);
-      try { if (existsSync(p) && statSync(p).isFile()) return p; } catch {}
+      try { if (existsSync(p) && statSync(p).isFile()) return resolveWinShim(name, p); } catch {}
     }
   }
   return '';
+}
+
+// Windows 的 npm 垫片（.cmd/.bat）不能被直接 spawn：Node ≥ 20 出于 CVE-2024-27980
+// 对 .cmd/.bat 一律 EINVAL（除非 shell:true，但那样引号转义就乱了）。垫片背后都是
+// node 脚本，找到垫片时优先解析出包内真身（.js）返回——调用方见到 .js 会用
+// process.execPath 起，垫片与 shell 全都绕开。解析不到就原样返回（保持旧行为）。
+const WIN_SHIM_REAL_JS = {
+  codex: ['../@openai/codex/bin/codex.js'],
+};
+
+function resolveWinShim(name, found) {
+  if (process.platform !== 'win32') return found;
+  if (!/\.(cmd|bat)$/i.test(found)) return found;
+  for (const rel of WIN_SHIM_REAL_JS[name] || []) {
+    const real = path.resolve(path.dirname(found), rel);
+    try { if (existsSync(real) && statSync(real).isFile()) return real; } catch {}
+  }
+  return found;
 }
 
 const RUNNABLE = {

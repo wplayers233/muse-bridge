@@ -22,6 +22,7 @@
 
 import { spawn } from 'node:child_process';
 import { findCliBin } from './agent-status.mjs';
+import { cliKeyEnv } from './agent-keys.mjs';
 
 // 审批类反向请求 → 界面上那张卡的 kind。
 const APPROVAL_METHODS = Object.freeze({
@@ -55,6 +56,8 @@ export function appToolName(item) {
       const paths = (Array.isArray(item.changes) ? item.changes : []).map((c) => c && c.path).filter(Boolean);
       return '改文件' + (paths.length ? '（' + paths.map((p) => String(p).split('/').pop()).join('、') + '）' : '');
     }
+    case 'mcpToolCall': return [item.server, item.tool].filter(Boolean).join(' · ') || 'MCP 工具';
+    case 'webSearch': return '联网搜索' + (item.query ? '：' + String(item.query).slice(0, 80) : '');
     default: return item.type ? String(item.type) : '工具';
   }
 }
@@ -82,8 +85,57 @@ export function normAppToolItem(item, phase) {
       .map((c) => ({ path: String((c && c.path) || ''), kind: normChangeKind(c && c.kind), diff: c && c.diff ? cut(c.diff) : '' }))
       .filter((c) => c.path);
     if (list.length) out.changes = list;
+  } else if (item.type === 'mcpToolCall') {
+    if (item.tool) out.tool = String(item.tool).slice(0, 120);
+    const txt = mcpResultText(item);
+    if (txt) out.output = cut(txt);
+  } else if (item.type === 'webSearch') {
+    if (item.query) out.summary = String(item.query).slice(0, 400);
   }
   return out;
+}
+
+// 一轮的 input：正文 + 本地图片。U1 已按 0.162.1 官方 schema 复核（codex app-server
+// generate-json-schema → UserInput）：本地图片变体是【localImage】{path, detail?}（驼峰），
+// 不是 exec 文档里的 --image，更不是下划线的 local_image。
+export function buildTurnInput(prompt, images = []) {
+  const input = [];
+  const text = String(prompt ?? '');
+  if (text) input.push({ type: 'text', text });
+  const list = Array.isArray(images) ? images : [];
+  for (const img of list) {
+    const p = String(img || '').trim();
+    if (p) input.push({ type: 'localImage', path: p });
+  }
+  // 空轮次兜底：input 不允许为空数组（TextUserInput 的 text 是必填）。
+  if (!input.length) input.push({ type: 'text', text: '' });
+  return input;
+}
+
+// MCP 工具结果 → 纯文本（result.content 是块数组，取 text 块拼接；出错给 error.message）。
+function mcpResultText(item) {
+  if (item.error && item.error.message) return String(item.error.message);
+  const r = item.result;
+  const content = r && Array.isArray(r.content) ? r.content : [];
+  const parts = content
+    .map((c) => (c && typeof c === 'object' && typeof c.text === 'string' ? c.text : ''))
+    .filter(Boolean);
+  return parts.join('\n');
+}
+
+// turn/plan/updated 的 plan 步骤 → 待办清单条目（与 exec 路 todo_list 同一形状）。
+// 状态词汇差异：app-server 给 inProgress（驼峰），任务卡认 in_progress，这里映射。
+export function appPlanItems(plan) {
+  const list = Array.isArray(plan) ? plan : [];
+  return list
+    .map((s) => {
+      const status = String((s && s.status) || '');
+      return {
+        text: String((s && (s.step || s.text)) || '').slice(0, 300),
+        status: status === 'inProgress' ? 'in_progress' : status,
+      };
+    })
+    .filter((x) => x.text);
 }
 
 // token 用量：app-server 给 {total:{...}, last:{...}}，取 last（这一轮）。
@@ -271,6 +323,7 @@ export async function appServerAvailable({ env = process.env, binDir = '' } = {}
  *
  * @param {object} o
  * @param {string} o.prompt              这一轮要说的话
+ * @param {string[]} [o.images]          本地图片绝对路径（turn input 的 localImage 项）
  * @param {string} [o.threadId]          已有的会话 id（空 = 新建）
  * @param {string} [o.cwd]               工作目录
  * @param {string} [o.model]             模型（空 = CLI 自己的配置）
@@ -284,7 +337,7 @@ export async function appServerAvailable({ env = process.env, binDir = '' } = {}
  */
 export async function* runAppServerTurn(agent, o = {}) {
   const {
-    prompt, threadId = '', cwd = '', model = '', effort = '',
+    prompt, images = [], threadId = '', cwd = '', model = '', effort = '',
     approvalPolicy = 'on-request', sandbox = 'workspace-write',
     onServerRequest = null, signal = null, env = process.env, binDir = '',
   } = o;
@@ -297,7 +350,9 @@ export async function* runAppServerTurn(agent, o = {}) {
   const isJs = /\.(c|m)?js$/i.test(bin);
   const child = spawn(isJs ? process.execPath : bin, isJs ? [bin, 'app-server'] : ['app-server'], {
     cwd: cwd || undefined,
-    env: { ...searchEnv, NO_COLOR: '1', TERM: 'dumb' },
+    // 存过的 key 注进去（agent-keys）：没登录只存了 key 的机器，这条路也能起来——
+    // 与 exec 路（agent-cli.mjs runCliTurn）同一待遇。
+    env: { ...searchEnv, ...cliKeyEnv('codex'), NO_COLOR: '1', TERM: 'dumb' },
     stdio: ['pipe', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
   });
@@ -337,7 +392,7 @@ export async function* runAppServerTurn(agent, o = {}) {
     sessionId = id;
     yield { type: 'start', agent, sessionId, resumed: !!threadId };
 
-    const turnParams = { threadId: sessionId, input: [{ type: 'text', text: String(prompt ?? '') }] };
+    const turnParams = { threadId: sessionId, input: buildTurnInput(prompt, images) };
     // 模型 / 思考深度：只有显式选了才覆盖（空 = 用 CLI 自己的 config.toml）。
     if (model) turnParams.model = model;
     if (effort) turnParams.effort = effort;
@@ -394,8 +449,9 @@ export async function* runAppServerTurn(agent, o = {}) {
           if (phase === 'started') sawReasoningDelta = false;
           continue;
         }
-        if (item.type === 'userMessage') continue;
-        if (item.type === 'commandExecution' || item.type === 'fileChange') {
+        if (item.type === 'userMessage' || item.type === 'hookPrompt') continue;
+        if (item.type === 'commandExecution' || item.type === 'fileChange'
+          || item.type === 'mcpToolCall' || item.type === 'webSearch') {
           const ev = normAppToolItem(item, phase);
           // 命令输出：优先用增量攒下来的（app-server 早中期不给 aggregatedOutput）。
           if (!ev.output) {
@@ -408,6 +464,19 @@ export async function* runAppServerTurn(agent, o = {}) {
           }
           continue;
         }
+        if (item.type === 'contextCompaction') {
+          // schema 里这一项只有 id：started = 开始压，completed = 压完，各给一条提示。
+          yield { type: 'notice', text: phase === 'started' ? '正在压缩上下文…' : '上下文已压缩' };
+          continue;
+        }
+        continue;
+      }
+
+      // 计划清单（U2 已按 0.162.1 schema 复核：{plan:[{step,status}], threadId, turnId}）。
+      // 状态词汇 inProgress → in_progress（任务卡认 exec 路的 TodoWrite 惯例）。
+      if (m === 'turn/plan/updated') {
+        const items = appPlanItems(p.plan);
+        if (items.length) yield { type: 'todo', items };
         continue;
       }
 

@@ -145,7 +145,7 @@ export function registerAgentCliRoutes(router, { identify }) {
       // model / effort：codex 的模型与思考深度（分页的选择器里选的；zcode 没有这两个参数）。
       const prefs = getCliPrefs(ctx, agent);
       const cwd = prefs.cwd;
-      // 图片附件：codex 走官方 -i；有图时强制走 exec 路（app-server 这条传输还不收附件）。
+      // 图片附件：codex 官方能力（exec 路 -i / app-server 路 localImage，见 runtime/agent-appserver.mjs）。
       let images = [];
       if (Array.isArray(body.images) && body.images.length) {
         if (agent !== 'codex') return json(res, 400, { error: '这个 agent 暂不支持图片附件' });
@@ -165,12 +165,12 @@ export function registerAgentCliRoutes(router, { identify }) {
       // 这一轮的审批等待者（用户点卡片时 POST 回来 resolve；见 /api/codex/approval）。
       const turnKey = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
       try {
-        // codex 有 app-server 就走新路：审批、会话托管、流式正文全在里面（见 runtime/agent-appserver.mjs）。
-        // 老版本没有这个子命令就回落 exec（老路还能用，只是没有审批卡）。带图片时走 exec（-i 是它的原生参数）。
-        const useAppServer = agent === 'codex' && !images.length && await appServerAvailable();
+        // codex 有 app-server 就走新路：审批、会话托管、流式正文、图片附件（localImage）全在里面。
+        // 老版本没有这个子命令就回落 exec（老路还能用，只是没有审批卡）。
+        const useAppServer = agent === 'codex' && await appServerAvailable();
         const stream = useAppServer
           ? runAppServerTurn(agent, {
-            prompt, threadId: sessionId, cwd, model: prefs.model, effort: prefs.effort, signal: ac.signal,
+            prompt, images, threadId: sessionId, cwd, model: prefs.model, effort: prefs.effort, signal: ac.signal,
             onServerRequest: (method, params, approvalId) => waitForApproval(turnKey, approvalId),
           })
           : runCliTurn(agent, { prompt, sessionId, cwd, model: prefs.model, effort: prefs.effort, images, signal: ac.signal });
