@@ -10,7 +10,7 @@
   import AccountCard from './AccountCard.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
   import { cliChat, cliNew, cliPick, cliDrop, cliSessions, cliActiveId, cliStatus, loadCliStatus, statusOf, cwdOf, setCliCwd,
-    cliModels, loadCliModels, modelOf, effortOf, setCliModel } from '../lib/cliChat.svelte.js';
+    cliModels, loadCliModels, modelOf, effortOf, setCliModel, syncSessions } from '../lib/cliChat.svelte.js';
   import { cliDock, cliDockOpen, setCliDockWs } from '../lib/cliDock.svelte.js';
   import { ui, rootScreen, toggleTheme, me } from '../lib/state.svelte.js';
   import { closePage } from '../lib/pageMorph.js';
@@ -89,6 +89,8 @@
   $effect(() => setCliDockWs('codex', cwd));
   onMount(() => {
     loadCliStatus(true);
+    // 会话注册表对账：模块加载时跑过一次，这里补一次（换设备/重新登录回到页面要拉最新）。
+    syncSessions();
     // 模型清单单独拉（服务端要起一次 app-server 读 model/list，约一秒；那边缓存 10 分钟）。
     loadCliModels();
     const mq = matchMedia('(min-width: 900px)');

@@ -7,6 +7,10 @@
 //   POST /api/zcode/cwd         同上
 //   GET  /api/codex/models      codex 能用的模型 + 每个模型的可选思考深度（走官方 app-server 的 model/list）
 //   POST /api/codex/model       { model?, effort? } → 记住选定的模型 / 思考深度（空 = 交回 CLI 自己的配置）
+//   GET  /api/cli/sessions      ?agent= 侧栏会话列表（?messages=1 连快照一起给）
+//   GET  /api/cli/sessions/one  ?agent=&id= 取一条完整快照（跨设备点开侧栏某条）
+//   POST /api/cli/sessions/save { agent, id?, sessionId, cwd, title?, messages? } → { ok, id }
+//   POST /api/cli/sessions/delete { agent, id } → { ok }（幂等）
 //
 // 门禁：requireCtx（admin / user，share 与未登录 401）＋ 该身份的 agent 名单（ctx.allowCodex /
 // ctx.allowZcode——全局开关 ∩ 按人授权）。这两个 agent 目前 multiUser:false，所以实际只有管理员过。
@@ -20,6 +24,7 @@ import { agentStatusList, findCliBin, refreshAgentProbes } from '../runtime/agen
 import { CLI_AGENTS, CLI_MISSING_NOTE, runCliTurn } from '../runtime/agent-cli.mjs';
 import { runAppServerTurn, appServerAvailable } from '../runtime/agent-appserver.mjs';
 import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs } from '../runtime/cli-cwd.mjs';
+import { listCliSessions, getCliSession, saveCliSession, deleteCliSession } from '../runtime/cli-sessions.mjs';
 import { codexModels } from '../runtime/agent-models.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -253,6 +258,73 @@ export function registerAgentCliRoutes(router, { identify }) {
     try {
       const prefs = setCliAgentPrefs(ctx, 'codex', { model: body && body.model, effort: body && body.effort });
       json(res, 200, { ok: true, model: prefs.model, effort: prefs.effort });
+    } catch (e) {
+      json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) });
+    }
+  });
+
+  // ── 会话注册表（跨设备同步侧栏与续聊凭据；存储见 runtime/cli-sessions.mjs） ──────
+  const agentOf = (req) => {
+    try { return new URL(req.url, 'http://x').searchParams.get('agent') || ''; }
+    catch { return ''; }
+  };
+
+  // 侧栏列表（默认只给元数据；?messages=1 连快照一起给——换设备冷启动一次拉全）。
+  router.on('GET', '/api/cli/sessions', (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    const agent = agentOf(req);
+    if (!CLI_AGENTS.includes(agent)) return json(res, 400, { error: '未知 agent' });
+    if (!allow(ctx, agent)) return json(res, 403, { error: `${agent} 未启用，或你的账号没有使用权限` });
+    let withMessages = false;
+    try { withMessages = new URL(req.url, 'http://x').searchParams.get('messages') === '1'; } catch {}
+    try { json(res, 200, { ok: true, sessions: listCliSessions(ctx, agent, { withMessages }) }); }
+    catch (e) { json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) }); }
+  });
+
+  // 取一条完整快照（另一台设备点开侧栏某条时用；列表接口不带正文，省带宽）。
+  router.on('GET', '/api/cli/sessions/one', (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    const agent = agentOf(req);
+    if (!CLI_AGENTS.includes(agent)) return json(res, 400, { error: '未知 agent' });
+    if (!allow(ctx, agent)) return json(res, 403, { error: `${agent} 未启用，或你的账号没有使用权限` });
+    let id = '';
+    try { id = new URL(req.url, 'http://x').searchParams.get('id') || ''; } catch {}
+    const rec = getCliSession(ctx, agent, id);
+    if (!rec) return json(res, 404, { error: '这条会话不存在（可能已在别的设备上删除）' });
+    json(res, 200, { ok: true, session: rec });
+  });
+
+  // 新增 / 更新一条快照（前端每轮收尾防抖上传；id 不给就由服务端生成）。
+  router.on('POST', '/api/cli/sessions/save', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const agent = String(body.agent || '');
+    if (!CLI_AGENTS.includes(agent)) return json(res, 400, { error: '未知 agent' });
+    if (!allow(ctx, agent)) return json(res, 403, { error: `${agent} 未启用，或你的账号没有使用权限` });
+    try {
+      const id = saveCliSession(ctx, agent, body);
+      json(res, 200, { ok: true, id });
+    } catch (e) {
+      json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) });
+    }
+  });
+
+  // 删一条（幂等：不存在也算成功）。
+  router.on('POST', '/api/cli/sessions/delete', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const agent = String(body.agent || '');
+    if (!CLI_AGENTS.includes(agent)) return json(res, 400, { error: '未知 agent' });
+    if (!allow(ctx, agent)) return json(res, 403, { error: `${agent} 未启用，或你的账号没有使用权限` });
+    try {
+      deleteCliSession(ctx, agent, body.id);
+      json(res, 200, { ok: true });
     } catch (e) {
       json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) });
     }

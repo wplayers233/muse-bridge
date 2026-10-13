@@ -32,7 +32,9 @@ const controls = { codex: null, zcode: null };   // 在飞的请求（abort 用�
 //
 // 会话号是 CLI 自己给的（codex: thread_id，zcode: sessionId），续聊靠它——所以「新会话」=
 // 清掉 sessionId 再聊，CLI 会开一段全新的；「切回旧的」就是把它的 sessionId 装回去接着聊。
-// 本地持久化（localStorage）：与聊天记录同源，杀后台冷启动还认得出上次聊到哪。
+// 持久化分两层：localStorage 是【本机缓存】（冷启动立即有内容可看），服务端注册表
+// （/api/cli/sessions*，见 src/runtime/cli-sessions.mjs）是【跨设备的真身】——换手机、
+// 清缓存都能从服务端把侧栏和续聊凭据找回来。写法与 Claude 页同一套思路：先本后云，云为准。
 const SKEY = 'bridge-cli-sessions';
 const MAX_SESSIONS = 20;      // 每家留最近这么多条
 const MAX_SAVE_ITEMS = 80;    // 落盘时每条会话最多存这么多条消息
@@ -85,6 +87,99 @@ function persist() {
   }, 400);
 }
 
+// ── 服务端同步（跨设备真身） ─────────────────────────────────────────────────
+// 上传：把一条快照 POST 到 /api/cli/sessions/save（防抖；sessionId 为空的不传——
+// 没有会话号就没法在别的设备续聊，存了也是死数据）。失败不打扰用户：本地照旧，
+// 下次 snapshot / sync 再试。
+const pushTimers = { codex: 0, zcode: 0 };
+function pushSession(agent, rec) {
+  if (!rec || !rec.sessionId) return;
+  clearTimeout(pushTimers[agent]);
+  pushTimers[agent] = setTimeout(async () => {
+    try {
+      const r = await fetch(apiUrl('/api/cli/sessions/save'), {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          agent, id: rec.id, sessionId: rec.sessionId, cwd: rec.cwd || '', title: rec.title || '',
+          messages: trim(rec.items || []).slice(-MAX_SAVE_ITEMS),
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      // 服务端生成了新 id（理论上不会：本地都带 id）就对齐，保持两端同键。
+      if (r.ok && j && j.id && j.id !== rec.id) rec.id = j.id;
+    } catch {}
+  }, 800);
+}
+
+// 删除：本地删完顺手把服务端那条也删掉（幂等，失败就算了——下次 sync 会以服务端为准带回来，
+// 用户再删一次即可；为删除可靠性加重试链不值得）。
+function deleteRemote(agent, id) {
+  fetch(apiUrl('/api/cli/sessions/delete'), {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'same-origin',
+    body: JSON.stringify({ agent, id }),
+  }).catch(() => {});
+}
+
+let syncing = false;
+let syncedOnce = false;
+// 与服务端对账：拉侧栏列表 → 把本机有而服务端没有的传上去（老 localStorage 数据的一次性
+// 迁移也走这条路）→ 以服务端为准合并本地列表。失败（离线/未登录）时本地状态原样保留。
+export async function syncSessions() {
+  if (syncing) return;
+  syncing = true;
+  try {
+    for (const agent of ['codex', 'zcode']) {
+      const r = await fetch(apiUrl('/api/cli/sessions?agent=' + agent), { headers: authHeaders(), credentials: 'same-origin' });
+      if (!r.ok) continue;                     // 未授权 / 服务不可用：保持本地，下次再试
+      const j = await r.json().catch(() => null);
+      if (!j || !Array.isArray(j.sessions)) continue;
+      const server = j.sessions;
+      const knownIds = new Set(server.map((s) => s.id));
+      const knownSids = new Set(server.map((s) => s.sessionId));
+      // 迁移/补传：本机有 sessionId、服务端没有的记录传上去（老 localStorage 里的存量就在这里上云）。
+      for (const rec of cliSessions[agent]) {
+        if (!rec.sessionId || knownIds.has(rec.id) || knownSids.has(rec.sessionId)) continue;
+        try {
+          const up = await fetch(apiUrl('/api/cli/sessions/save'), {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              agent, id: rec.id, sessionId: rec.sessionId, cwd: rec.cwd || '', title: rec.title || '',
+              messages: trim(rec.items || []).slice(-MAX_SAVE_ITEMS),
+            }),
+          });
+          if (up.ok) knownIds.add(rec.id);
+        } catch {}
+      }
+      // 以服务端为准重建列表：服务端条目优先用本地同 id 的（它刚被这台设备写过，内容最新），
+      // 否则存 meta + items=null（点开时再取快照）。上传失败的本机记录原样保留（下次再传）。
+      const merged = server.map((meta) => {
+        const local = cliSessions[agent].find((s) => s.id === meta.id);
+        return local || { id: meta.id, sessionId: meta.sessionId || '', cwd: meta.cwd || '', title: meta.title || '', at: meta.updatedAt || 0, items: null };
+      });
+      const active = cliSessions[agent].find((s) => s.id === activeId[agent]);
+      if (active && active.items && active.items.length && !merged.some((s) => s.id === active.id)) {
+        merged.unshift(active);                // 当前正在聊的那条永远留在侧栏里
+      } else if (active && active.items && active.items.length) {
+        const i = merged.findIndex((s) => s.id === active.id);
+        if (i >= 0) merged[i] = active;
+      }
+      merged.sort((a, b) => (b.at || 0) - (a.at || 0));
+      cliSessions[agent] = merged.slice(0, MAX_SESSIONS);
+    }
+    syncedOnce = true;
+    persist();
+  } finally {
+    syncing = false;
+  }
+}
+export const cliSynced = () => syncedOnce;
+
 function hydrate() {
   let raw = null;
   try { raw = JSON.parse(localStorage.getItem(SKEY) || 'null'); } catch {}
@@ -103,6 +198,8 @@ function hydrate() {
   }
 }
 hydrate();
+// 与服务端对账（拉侧栏 + 老数据迁移上云）。失败静默：离线/未登录时本地照旧，下次再试。
+syncSessions();
 
 // 把当前会话（cliChat[agent]）写回列表里的快照；没有内容就不留痕。
 function snapshot(agent) {
@@ -121,6 +218,7 @@ function snapshot(agent) {
   list.sort((a, b) => (b.at || 0) - (a.at || 0));
   if (list.length > MAX_SESSIONS) cliSessions[agent] = list.slice(0, MAX_SESSIONS);
   persist();
+  pushSession(agent, rec);   // 服务端注册表同步（跨设备真身；防抖、失败静默）
 }
 
 export const cliActiveId = (agent) => activeId[agent];
@@ -135,16 +233,33 @@ export function cliNew(agent) {
   persist();
 }
 
-// 切到列表里的某一条。
-export function cliPick(agent, id) {
+// 切到列表里的某一条。async：另一台设备同步来的条目本地只有元数据（items=null），
+// 点开时先取服务端的完整快照再装进来；本机自己的条目不走网络。
+export async function cliPick(agent, id) {
   if (id === activeId[agent]) return;
   cliStop(agent);
   snapshot(agent);
   const rec = cliSessions[agent].find((s) => s.id === id);
   if (!rec) return;
+  if (!Array.isArray(rec.items)) {
+    try {
+      const r = await fetch(apiUrl(`/api/cli/sessions/one?agent=${agent}&id=${encodeURIComponent(id)}`), { headers: authHeaders(), credentials: 'same-origin' });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j && j.session) {
+        rec.items = Array.isArray(j.session.messages) ? j.session.messages : [];
+        if (!rec.title) rec.title = j.session.title || '';
+      } else if (r.status === 404) {
+        // 服务端已经没有这条（在别的设备上删了）：本地也摘掉，别留一个点不开的空壳。
+        const i = cliSessions[agent].findIndex((s) => s.id === id);
+        if (i >= 0) cliSessions[agent].splice(i, 1);
+        persist();
+        return;
+      }
+    } catch {}
+  }
   activeId[agent] = id;
   const c = cliChat[agent];
-  c.items = rec.items.slice();
+  c.items = Array.isArray(rec.items) ? rec.items.slice() : [];
   c.sessionId = rec.sessionId || '';
   c.cwd = rec.cwd || '';
   c.error = '';
@@ -163,6 +278,7 @@ export function cliDrop(agent, id) {
     c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.seq = 0;
   }
   persist();
+  deleteRemote(agent, id);   // 服务端那条也删掉（幂等；失败时下次 sync 会带回来，再删一次即可）
 }
 
 export function cliStop(agent) {

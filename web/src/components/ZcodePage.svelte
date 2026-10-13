@@ -13,7 +13,7 @@
   import CliDock from './dock/CliDock.svelte';
   import AccountCard from './AccountCard.svelte';
   import ProjectPicker from './ProjectPicker.svelte';
-  import { cliChat, cliNew, cliPick, cliDrop, cliSessions, cliActiveId, cliStatus, loadCliStatus, statusOf, cwdOf, setCliCwd } from '../lib/cliChat.svelte.js';
+  import { cliChat, cliNew, cliPick, cliDrop, cliSessions, cliActiveId, cliStatus, loadCliStatus, statusOf, cwdOf, setCliCwd, syncSessions } from '../lib/cliChat.svelte.js';
   import { cliDock, cliDockOpen, setCliDockWs } from '../lib/cliDock.svelte.js';
   import { ui, rootScreen, toggleTheme, me } from '../lib/state.svelte.js';
   import { closePage } from '../lib/pageMorph.js';
@@ -63,6 +63,7 @@
   // 宽屏（≥900px）常驻侧栏；窗口缩放跟着变
   onMount(() => {
     loadCliStatus(true);
+    syncSessions();   // 会话注册表对账（模块加载时跑过一次，回页面补一次）
     const mq = matchMedia('(min-width: 900px)');
     const sync = () => { wide = mq.matches; if (wide) nav = false; };
     sync();
