@@ -12,7 +12,7 @@ import path from 'node:path';
 if (!process.env.BRIDGE_DATA_ROOT) process.env.BRIDGE_DATA_ROOT = mkdtempSync(path.join(os.tmpdir(), 'bridge-models-'));
 process.env.BRIDGE_AGENT_BIN_DIR = '';   // 别让随程序自带的那份真 codex 顶掉桩
 
-const { codexModels, resetModelCache } = await import('./agent-models.mjs');
+const { codexModels, resetModelCache, mergeUnion } = await import('./agent-models.mjs');
 
 // 一个会数自己被打了几次的桩：每次拉起都往 counter 里追加一行。
 function stubAppServer(name, counter, body) {
@@ -111,4 +111,23 @@ test('没装 codex：直接回空清单，不去 spawn', async () => {
   resetModelCache();
   const empty = mkdtempSync(path.join(os.tmpdir(), 'stub-empty-'));
   assert.deepEqual(await codexModels({ env: { PATH: empty, HOME: empty, BRIDGE_AGENT_BIN_DIR: '' } }), []);
+});
+
+// —— 目录并集（对抗上游灰度翻动：见过的模型不再丢）——
+test('mergeUnion：空 stored 全量收编 / 字段以 latest 为准 / latest 缺席的保留 / 新条目追加尾部', () => {
+  // 空 stored：latest 全量收编，顺序不变
+  const a = { id: 'x', label: 'X', efforts: ['low'] };
+  assert.deepEqual(mergeUnion([], [a]), [a]);
+  // 字段以 latest 为准（自愈：上游翻回全量桶时补全说明与档位），位置保持 first-seen
+  const old = { id: 'x', label: 'X', description: '', efforts: [], defaultEffort: '', isDefault: false, hidden: false };
+  const fresh = { id: 'x', label: 'X-new', description: 'workhorse', efforts: ['low', 'high'], defaultEffort: 'low', isDefault: true, hidden: false };
+  const merged = mergeUnion([old, { id: 'y', label: 'Y' }], [fresh]);
+  assert.equal(merged.length, 2);
+  assert.deepEqual(merged[0], fresh, '同 id 的条目字段整体换成 latest，位置不动');
+  assert.deepEqual(merged[1], { id: 'y', label: 'Y' }, 'latest 缺席的条目原样保留');
+  // latest 新增的追加尾部
+  const merged2 = mergeUnion([{ id: 'y', label: 'Y' }], [{ id: 'z', label: 'Z' }]);
+  assert.deepEqual(merged2.map((m) => m.id), ['y', 'z']);
+  // 坏条目（无 id）与非法入参不炸
+  assert.deepEqual(mergeUnion(null, [null, {}, { id: 'ok' }]), [{ id: 'ok' }]);
 });

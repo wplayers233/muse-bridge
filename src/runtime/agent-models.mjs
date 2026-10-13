@@ -12,6 +12,7 @@
 // 机器上也给得出模型名——用户至少能看见自己要选的是哪个，而不是一个空下拉框。
 
 import { spawn } from 'node:child_process';
+import { existsSync, readFileSync, writeFile } from 'node:fs';
 import { findCliBin } from './agent-status.mjs';
 
 const OK_TTL_MS = 10 * 60_000;
@@ -24,6 +25,48 @@ const HANDSHAKE_TIMEOUT_MS = 8_000;
 export const EFFORT_ORDER = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
 let cache = { at: 0, ttl: 0, models: [] };
+
+// —— 目录并集：对抗上游灰度翻动 ——
+// model/list 的目录由 OpenAI 服务端按灰度桶下发（实测同一台机器几分钟内从 8 个翻到 3 个，
+// 与登录态 / API key / clientInfo 均无关）。上游翻到「精简桶」时，见过的模型不该从界面上消失：
+// codex 的 -m 接受任意模型 id，目录没下发 ≠ 不能用。所以把【历次见过的】模型做并集：
+// 一旦见过就一直在列表里；上游下次发全量时字段（说明 / 思考深度档）自动补全。
+let union = null;          // Map<id, model> | null（null = 还没从磁盘懒加载过）
+let unionLoadedFrom = '';  // 记录懒加载来源路径，路径变了（换 dataDir）就重载
+
+// 纯函数：把 latest 合进 stored，返回并集数组（first-seen 顺序；latest 字段优先，新条目追加尾部）。
+export function mergeUnion(stored, latest) {
+  const out = new Map();
+  for (const m of Array.isArray(stored) ? stored : []) {
+    if (m && typeof m === 'object' && m.id) out.set(m.id, m);
+  }
+  for (const m of Array.isArray(latest) ? latest : []) {
+    if (m && typeof m === 'object' && m.id) out.set(m.id, m);   // Map.set = 覆盖字段 + 保留原位置
+  }
+  return [...out.values()];
+}
+
+function loadUnion(storePath) {
+  if (union && unionLoadedFrom === storePath) return union;
+  unionLoadedFrom = storePath;
+  let seed = [];
+  try {
+    if (existsSync(storePath)) {
+      const j = JSON.parse(readFileSync(storePath, 'utf8'));
+      if (Array.isArray(j?.models)) seed = j.models;
+    }
+  } catch { seed = []; }   // 坏文件当没有，下次成功拉取会重写
+  union = new Map(seed.filter((m) => m && m.id).map((m) => [m.id, m]));
+  return union;
+}
+
+function persistUnion(storePath) {
+  if (!union) return;
+  // fire-and-forget：单管理员场景没有并发竞争，写失败也不影响主流程
+  writeFile(storePath, JSON.stringify({ savedAt: new Date().toISOString(), models: [...union.values()] }), (err) => {
+    if (err) console.error('[agent-models] union 持久化失败:', err.message);
+  });
+}
 
 // 归一成界面要的形状：id / 显示名 / 说明 / 可选思考深度 / 默认深度 / 是否默认。
 function normModel(m) {
@@ -119,22 +162,40 @@ function askAppServer(bin, env) {
 }
 
 /**
- * 这台机器上 codex 能用的模型清单。读缓存；过期才真起进程。
- * @returns {Promise<Array>} 失败时回空数组（界面据此不摆选择器，而不是摆一个空的）
+ * 这台机器上 codex 能用的模型清单（历次见过的并集）。读缓存；过期才真起进程。
+ * @param {{ env?: object, force?: boolean, store?: { path: string } }} opts
+ *   store 给了就把并集持久化到那个文件（重启不丢）；不传 = 纯内存（测试用）。
+ * @returns {Promise<Array>} 失败时回已知的并集（界面据此不摆空的选择器）
  */
-export async function codexModels({ env = process.env, force = false } = {}) {
+export async function codexModels({ env = process.env, force = false, store = null } = {}) {
   const now = Date.now();
   if (!force && cache.at && now - cache.at < cache.ttl) return cache.models;
   const bin = findCliBin('codex', env);
-  if (!bin) { cache = { at: now, ttl: FAIL_TTL_MS, models: [] }; return []; }
+  if (!bin) {
+    cache = { at: now, ttl: FAIL_TTL_MS, models: [] };
+    return [];
+  }
   const models = await askAppServer(bin, env);
   if (!models || !models.length) {
-    cache = { at: now, ttl: FAIL_TTL_MS, models: cache.models || [] };
-    return cache.models || [];
+    // 拉取失败也回并集：上游抖一下不该把界面清空
+    const known = store ? [...loadUnion(store.path).values()] : (cache.models || []);
+    cache = { at: now, ttl: FAIL_TTL_MS, models: known };
+    return known;
   }
-  cache = { at: now, ttl: OK_TTL_MS, models };
-  return models;
+  let list = models;
+  if (store) {
+    const u = loadUnion(store.path);
+    list = mergeUnion([...u.values()], models);
+    for (const m of list) u.set(m.id, m);
+    persistUnion(store.path);
+  }
+  cache = { at: now, ttl: OK_TTL_MS, models: list };
+  return list;
 }
 
-// 测试与「重新检测」用：丢掉缓存。
-export function resetModelCache() { cache = { at: 0, ttl: 0, models: [] }; }
+// 测试与「重新检测」用：丢掉缓存（内存并集一并清；磁盘文件保留——它是「见过的」历史）。
+export function resetModelCache() {
+  cache = { at: 0, ttl: 0, models: [] };
+  union = null;
+  unionLoadedFrom = '';
+}

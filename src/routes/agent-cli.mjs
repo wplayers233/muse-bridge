@@ -292,8 +292,12 @@ export function registerAgentCliRoutes(router, { identify }) {
     if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
     let force = false;
     try { force = new URL(req.url, 'http://x').searchParams.get('refresh') === '1'; } catch {}
-    // 拿不到就回空清单：界面据此不摆选择器（而不是摆一个空的下拉框），仍然可用 CLI 自己的配置。
-    const models = await codexModels({ force });
+    // 并集持久化在 <dataDir>/codex-models-union.json：上游 model/list 按灰度桶下发（实测会从
+    // 8 个翻到 3 个），见过的模型做并集，翻回精简桶时界面不再丢模型（-m 接受任意 id，选了就能用）。
+    const models = await codexModels({
+      force,
+      store: { path: path.join(ctx.dataDir || '.', 'codex-models-union.json') },
+    });
     json(res, 200, { ok: true, models });
   });
 
