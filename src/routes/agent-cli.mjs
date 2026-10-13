@@ -13,6 +13,7 @@
 //   POST /api/cli/sessions/delete { agent, id } → { ok }（幂等）
 //   GET  /api/cli/agent-key     ?agent= 我自己的凭据状态（尾 4 位）
 //   POST /api/cli/agent-key     { agent, key } → 存 / 清我自己的 key（<dataDir>/agents/）
+//   GET  /api/agent/plan        ?agent=codex|zcode → { ok, plan } coding plan 用量/余额（null = 无可显示）
 //
 // 门禁：requireCtx（admin / user，share 与未登录 401）＋ 该身份的 agent 名单（ctx.allowCodex /
 // ctx.allowZcode——全局开关 ∩ 按人授权）。这两个 agent 目前 multiUser:false，所以实际只有管理员过。
@@ -29,6 +30,8 @@ import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs } from '../runtime/
 import { listCliSessions, getCliSession, saveCliSession, deleteCliSession } from '../runtime/cli-sessions.mjs';
 import { cliSpawnKeyEnv, cliDataEnv, keyDirFor, setAgentKey, agentKeyState, isKeyAgent } from '../runtime/agent-keys.mjs';
 import { codexModels } from '../runtime/agent-models.mjs';
+import { codexPlan } from '../runtime/agent-plan-codex.mjs';
+import { zcodePlan } from '../runtime/agent-plan-zcode.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -145,6 +148,30 @@ export function registerAgentCliRoutes(router, { identify }) {
       }
     }
     json(res, 200, { ok: true, agents: list });
+  });
+
+  // coding plan 用量/余额（账户菜单里的那一行）。按身份探：user 的凭据/登录态在各人自己的
+  // 目录里（cliDataEnv / cliSpawnKeyEnv 与 /api/agents/status 同一套口径），admin 走宿主。
+  // plan=null 表示「没有可显示的」（没装 / API-key 模式 / zcode 没登录或接口不合）——前端整行隐藏，
+  // 这不是错误，所以不落 4xx。探测自带长缓存（成功 5 分钟 / 失败 60 秒），?force=1 现探。
+  router.on('GET', '/api/agent/plan', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    let agent = '';
+    let force = false;
+    try {
+      const u = new URL(req.url, 'http://x');
+      agent = String(u.searchParams.get('agent') || '');
+      force = u.searchParams.get('force') === '1';
+    } catch {}
+    if (agent !== 'codex' && agent !== 'zcode') return json(res, 400, { error: 'agent 只认 codex / zcode' });
+    if (!allow(ctx, agent)) return json(res, 403, { error: `${agent} 未启用，或你的账号没有使用权限` });
+    const env = { ...process.env, ...cliDataEnv(ctx), ...cliSpawnKeyEnv(ctx, agent) };
+    let plan = null;
+    try {
+      plan = agent === 'codex' ? await codexPlan({ env, force }) : await zcodePlan({ env, force });
+    } catch { plan = null; }
+    json(res, 200, { ok: true, plan });
   });
 
   for (const agent of CLI_AGENTS) {

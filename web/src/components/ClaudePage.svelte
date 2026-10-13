@@ -1275,7 +1275,7 @@
   <div class="d-spacer"></div>
   <!-- 账户卡：贴底不随列表滚走（sticky）。设置 / 账户 / 关于都从这里进；常规模式菜单里多一项「主页」 -->
   <div class="d-foot">
-    <AccountCard onpick={closeDrawer} onhome={single ? null : slideOut} />
+    <AccountCard agent="claude" onpick={closeDrawer} onhome={single ? null : slideOut} />
   </div>
 
   {#if menuFor}

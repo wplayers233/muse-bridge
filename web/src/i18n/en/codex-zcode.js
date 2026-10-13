@@ -175,4 +175,19 @@ export default {
     '还没配认证（填一把 key 或先登录 CLI）': 'Not signed in yet (save a key, or sign in with the CLI)',
   '这台机器上没找到 codex（bridge 自带一份：装依赖时 npm install 会装上 @openai/codex；也可以单独装，官方安装：curl -fsSL https://chatgpt.com/codex/install.sh | sh）':
     'No codex on this server. Muse Bridge ships one (npm install pulls in @openai/codex); you can also install it separately with the official installer: curl -fsSL https://chatgpt.com/codex/install.sh | sh',
+
+  // —— 侧栏「凭据」折叠组（CodexPage 抽屉/常驻列）——
+  '凭据': 'Credentials',
+
+  // —— CliKeyForm（分页里自己填 API key）——
+  '已清除，回落到环境变量或 CLI 登录态': 'Cleared — falling back to the environment variable or the CLI’s own sign-in',
+  '已保存（只显示尾 4 位）': 'Saved (only the last 4 characters are shown)',
+  '没存上': 'Couldn’t save',
+  '已存 · 尾 {tail}': 'Saved · ends in {tail}',
+  '没存': 'Not saved',
+  '换一把（留空不动）': 'Replace it (leave empty to keep)',
+  '粘贴你的 API Key': 'Paste your API key',
+
+  // —— 账户菜单里的 coding plan 余额行（UserMenu，按所在页显示对应那家）——
+  '余额 {b}': 'Balance {b}',
   };

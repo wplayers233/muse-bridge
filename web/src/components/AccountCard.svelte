@@ -10,8 +10,10 @@
   import UserMenu from './UserMenu.svelte';
   import { t } from '../lib/i18n.js';
 
-  // onpick：选了菜单里某一项（侧栏抽屉跟着收起）；onhome：回主页（单 agent 模式传 null——没有主页）
-  let { onpick = null, onhome = null } = $props();
+  // onpick：选了菜单里某一项（侧栏抽屉跟着收起）；onhome：回主页（单 agent 模式传 null——没有主页）；
+  // agent：所在页的 agent 上下文（claude/codex/zcode）——菜单里那行 coding plan 余额按它取数；
+  // 缺省 = 老调用方（dimensio 侧栏共用处），菜单不带余额行。
+  let { onpick = null, onhome = null, agent = '' } = $props();
 
   let anchor = $state(null);
   function toggle(e) { anchor = anchor ? null : e.currentTarget.getBoundingClientRect(); }
@@ -33,7 +35,7 @@
 
 {#if anchor}
   <div class="acct-portal" use:portal>
-    <UserMenu {anchor} onclose={() => (anchor = null)} onpick={() => { anchor = null; onpick?.(); }} {onhome} />
+    <UserMenu {anchor} {agent} onclose={() => (anchor = null)} onpick={() => { anchor = null; onpick?.(); }} {onhome} />
   </div>
 {/if}
 
