@@ -279,7 +279,6 @@
   .cx-frames { flex: 1; min-height: 0; display: flex; gap: 4px; padding: 0; }
   .cx-frames.wide { padding: 0 12px 4px; max-width: 1180px; width: 100%; margin: 0 auto; }
   .cx-frame { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-  .cx-frames.wide .cx-frame { border: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 12px; }
   .conv { flex: 1; min-width: 0; padding: 4px 12px 0; }
 
   .cx-hello { display: flex; flex-direction: column; align-items: center; gap: 14px; }
