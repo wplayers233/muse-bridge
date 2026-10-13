@@ -213,9 +213,9 @@ uniform vec4 u_tintA;
 uniform vec4 u_tintB;
 in vec2 v_uv;
 out vec4 fragColor;
-const float CELL_PITCH = 6.0;
-const float CELL_SIZE  = 4.5;
-const float CELL_R     = 1.35;
+const float CELL_PITCH = 4.0;
+const float CELL_SIZE  = 3.0;
+const float CELL_R     = 0.9;
 const float SPEED_LO   = 20.0;
 const float SPEED_HI   = 36.0;
 const float RANGE_LO   = 10.0;
@@ -506,12 +506,6 @@ void main() {
   {#if open}
     <button class="pk-backdrop" aria-label={t('关闭')} onclick={close}></button>
     <div class="pk" class:down={dir === 'down'} role="menu">
-      {#if view === 'effort' && accent}
-        <!-- 能量场铺满整张浮层（z-index:-1 = 卡底之上、内容之下）；透明度随滑条档位渐入 -->
-        <div class="es-energy-layer" style:--es-pos-pct={(N > 1 ? (disp / (N - 1)) * 100 : 100) + '%'} aria-hidden="true">
-          <canvas class="es-energy" bind:this={canvasEl}></canvas>
-        </div>
-      {/if}
       {#if view === 'models'}
         <button class="row" onclick={() => pickModel('')} disabled={busy}>
           <span class="rname">{t('用 codex 自己的配置')}</span>
@@ -550,6 +544,10 @@ void main() {
               style:--slider-rest-pos={restPct + '%'}
               onpointerdown={down} onpointermove={move} onpointerup={up} onpointercancel={up} onlostpointercapture={up}>
               <div class="es-track" bind:this={trackEl}>
+                {#if accent}
+                  <!-- 能量场铺满整条轨道框（不止填充段）：透明度随档位渐入，拖动实时跟手 -->
+                  <span class="es-energy-wrap" aria-hidden="true"><canvas class="es-energy" bind:this={canvasEl}></canvas></span>
+                {/if}
                 <span class="es-fill" bind:this={fillEl}></span>
               </div>
               <span class="es-dots" aria-hidden="true">
@@ -686,10 +684,11 @@ void main() {
     overflow: hidden; container-type: inline-size; background: var(--es-slider-background); }
   .es-fill { position: absolute; inset: 0 auto 0 0; left: 0; overflow: hidden;
     width: var(--slider-drag-pos, var(--slider-rest-pos)); background: var(--es-slider-fill); }
-  /* 能量层：铺满整张浮层；透明度沿用官方 clamp((pos-25%)*k)，pos 由模板按 disp 响应式写入 */
-  .es-energy-layer { position: absolute; inset: 0; z-index: -1; border-radius: inherit; overflow: hidden; pointer-events: none;
-    opacity: clamp(0%, calc((var(--es-pos-pct, 100%) - 25%) * var(--es-energy-op-k)), var(--es-energy-op-max)); }
-  :global(html:not([data-theme="light"])) .pk .es-energy-layer { mix-blend-mode: plus-lighter; }
+  /* 能量层：铺满整条轨道框（track 裁圆角）；透明度沿用官方 clamp((pos-25%)*k)，
+     --slider-drag-pos 在 .es-slider 上命令式更新、沿自定义属性继承到这层，拖动实时跟手 */
+  .es-energy-wrap { pointer-events: none; position: absolute; inset: 0;
+    opacity: clamp(0%, calc((var(--slider-drag-pos, var(--slider-rest-pos)) - 25%) * var(--es-energy-op-k)), var(--es-energy-op-max)); }
+  :global(html:not([data-theme="light"])) .pk .es-energy-wrap { mix-blend-mode: plus-lighter; }
   .es-energy { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
     color: var(--es-energy-hot); outline-color: var(--es-energy-cool);
     border-top: 0 none var(--es-energy-charged-start); border-bottom: 0 none var(--es-energy-charged-end);
