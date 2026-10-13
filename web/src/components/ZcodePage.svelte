@@ -61,8 +61,7 @@
   const sbW = $derived(sb.sbW);
   const sbDrag = $derived(sb.sbDrag);
 
-  // 接入设置折叠组（侧栏里点行展开；宽窄屏共用同一份 drawerBody）。
-  let setupOpen = $state(false);
+  // 换工作目录入口在侧栏「项目」行——接入设置折叠组已从侧栏移除（极简化）。
 
   // 工作台（终端/审阅/文件）的作用域＝这个 agent 的工作目录。换目录时 meta 要重取、
   // 文件卡的定位要清掉（setCliDockWs 内部处理；面板经 {#key ws} 整体重挂）。
@@ -136,10 +135,6 @@
           <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3.5 5.5h13M3.5 10h13M3.5 14.5h13"/></svg>
         </button>
       {/if}
-      <span class="zc-mark" aria-hidden="true">
-        <!-- ZCode 官方 Z 标（官方开屏 logo 的同一组几何） -->
-        <svg viewBox="0 0 256 218" fill="currentColor"><path d="M249.6 0.13L116.48 25.6022C113.665 29.5699 109.054 32.0019 104.064 32.0019H6.3999V0H249.6Z"/><path d="M249.6 0.13L102.401 217.732H0L153.599 0.13H249.6Z"/><path d="M121.601 217.732L139.65 192.134C142.465 188.166 147.076 185.734 152.067 185.734H249.604V217.736H121.601V217.732Z"/></svg>
-      </span>
       <span class="zc-word">ZCode</span>
       {#if sideMode}<span class="zc-chip" class:ok={!!st && st.installed !== false && st.authed !== false}>{stateText}</span>{/if}
     </div>
@@ -195,12 +190,8 @@
 {/if}
 
 {#snippet drawerBody()}
-  <div class="zc-brand">
-    <span class="zc-mark" aria-hidden="true">
-      <svg viewBox="0 0 256 218" fill="currentColor"><path d="M249.6 0.13L116.48 25.6022C113.665 29.5699 109.054 32.0019 104.064 32.0019H6.3999V0H249.6Z"/><path d="M249.6 0.13L102.401 217.732H0L153.599 0.13H249.6Z"/><path d="M121.601 217.732L139.65 192.134C142.465 188.166 147.076 185.734 152.067 185.734H249.604V217.736H121.601V217.732Z"/></svg>
-    </span>
-    <span class="zc-word">ZCode</span>
-  </div>
+  <!-- 品牌行：不用 Z 标，「ZCode」用 Claude 字标的衬线字体（Anthropic Serif 栈） -->
+  <div class="zc-brand"><span class="zc-word">ZCode</span></div>
 
   {#if !single}
     <button class="d-item" onclick={() => { closeDrawer(); exit(); }}>
@@ -210,29 +201,8 @@
   <button class="d-item" onclick={() => { cliNew('zcode'); closeDrawer(); }}>
     <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M10 4.5v11M4.5 10h11"/></svg></span>{t('新会话')}
   </button>
-  <!-- 接入设置：原「接入」页签的内容收进这个折叠组（状态 / 工作目录 / 安装与登录说明）。 -->
-  <button class="d-item" class:cur={setupOpen} aria-expanded={setupOpen}
-    onclick={() => { setupOpen = !setupOpen; if (setupOpen) loadCliStatus(true); }}>
-    <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6.5v4M10 13.6h.01"/><circle cx="10" cy="10" r="7"/></svg></span>{t('接入设置')}
-    <span class="d-fold" class:open={setupOpen} aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
-  </button>
-  {#if setupOpen}
-    <div class="d-setup">
-      <div class="zc-row"><span class="zc-k">{t('状态')}</span><span class="zc-v">{stateText}</span></div>
-      {#if st?.note}<div class="zc-note">{tr(st.note)}</div>{/if}
-      <div class="zc-row"><span class="zc-k">{t('目录')}</span><span class="zc-v mono">{cwd || '—'}</span></div>
-      <div class="zc-actions">
-        <button class="zc-btn" onclick={() => { pickOpen = true; closeDrawer(); }}>{t('更换工作目录')}</button>
-        <button class="zc-btn" onclick={() => loadCliStatus(true)}>{t('重新检测')}</button>
-      </div>
-      <p class="zc-p">{t('这个分页直接跑这台机器上的 zcode：装了、登录过就能用，用的是它自己的模型配置。')}</p>
-      <div class="zc-row"><span class="zc-k">{t('安装')}</span><span class="zc-v mono">{st?.install || '—'}</span></div>
-      <div class="zc-row"><span class="zc-k">{t('登录')}</span><span class="zc-v mono">zcode login</span></div>
-      <div class="zc-note">{t('登录走浏览器授权，不认 API key（填了也不生效）。')}</div>
-      <div class="zc-note mono">{t('智谱国内版：zcode login bigmodel；Z.ai 国际版：zcode login zai。')}</div>
-      <a class="zc-btn link" href={st?.docs || 'https://github.com/zai-org/ZCode'} target="_blank" rel="noreferrer">{t('官方文档')}</a>
-    </div>
-  {/if}
+  <!-- 接入设置 / 工作台两组已从侧栏移除（对齐 Claude 的极简结构）：
+       状态看页头 chip 与空态引导，工作台入口在页头的工作台按钮，换工作目录在下方「项目」行。 -->
 
   <div class="d-sec">{t('会话')}</div>
   <div class="d-list">
@@ -250,21 +220,15 @@
     {#if !sessions.length}<div class="d-empty">{t('还没有会话')}</div>{/if}
   </div>
 
-  <!-- 窄屏没有侧列：工作台自己铺满整屏（CliDock 的 narrow 形态），入口在这儿。 -->
-  <div class="d-sec">{t('工作台')}</div>
+  <!-- 项目：Claude 侧栏同款（一行 = 当前工作目录，点击换目录） -->
+  <div class="d-sec">{tc('claude', '项目')}</div>
   <div class="d-list">
-    <button class="d-item" onclick={() => { cliDockOpen('zcode', 'review'); closeDrawer(); }}>
-      <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4.5h12M4 10h12M4 15.5h7"/></svg></span>{t('审阅')}
-    </button>
-    <button class="d-item" onclick={() => { cliDockOpen('zcode', 'term'); closeDrawer(); }}>
-      <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6.5l3.5 3.5L5 13.5M11 13.5h4"/></svg></span>{t('终端')}
-    </button>
-    <button class="d-item" onclick={() => { cliDockOpen('zcode', 'files'); closeDrawer(); }}>
-      <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2a1.5 1.5 0 0 1 1.5-1.5h3l1.4 1.7h6.6a1.5 1.5 0 0 1 1.5 1.5v6.4a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5V6.2Z"/></svg></span>{t('文件')}
-    </button>
-    <button class="d-item" onclick={() => { cliDockOpen('zcode', 'tasks'); closeDrawer(); }}>
-      <span class="d-lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h12M4 10h12M4 15h8"/><path d="M13.5 13.5l2 2 3-3.5" stroke-width="1.4"/></svg></span>{tc('claude', '任务')}
-    </button>
+    <div class="d-row proj" title={cwd || ''}>
+      <button class="d-recent" onclick={() => { pickOpen = true; closeDrawer(); }}>
+        <span class="d-bub"><span class="ic pj" aria-hidden="true">&#xe0c9;</span></span>
+        <span class="d-title">{cwd ? (cwd.split(/[\\/]/).filter(Boolean).pop() || cwd) : '—'}</span>
+      </button>
+    </div>
   </div>
 
   <div class="d-spacer"></div>
@@ -306,9 +270,8 @@
        顶部内边距（TopBar 的 calc(var(--sat) + 10px)、抽屉的 max(10px, var(--sat))），这里照同一套。 */
     padding: calc(var(--sat, 0px) + 8px) 10px 8px; }
   .zc-left, .zc-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .zc-mark { display: inline-flex; width: 20px; height: 20px; }
-  .zc-mark svg { width: 20px; height: 20px; }
-  .zc-word { font-size: 15px; font-weight: 600; letter-spacing: .01em; }
+  /* 品牌字用 Claude 字标同款衬线字体栈（Anthropic Serif），不带 Z 标 */
+  .zc-word { font-family: var(--serif-stack, Georgia, serif); font-size: 16px; font-weight: 500; letter-spacing: .01em; }
   .zc-chip { font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--faint); white-space: nowrap; }
   .zc-chip.ok { color: inherit; border-color: color-mix(in srgb, currentColor 30%, transparent); }
   .zc-ic { width: 32px; height: 32px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; color: inherit; }
@@ -326,17 +289,6 @@
   .zc-frame { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
   .zc-frames.wide .zc-frame { border: 1px solid var(--line); border-radius: 12px; }
   .conv { flex: 1; min-width: 0; padding: 4px 12px 0; }
-  .zc-row { display: flex; gap: 8px; font-size: 12.5px; line-height: 1.6; }
-  .zc-k { width: 44px; flex: none; color: var(--faint); }
-  .zc-v { min-width: 0; word-break: break-all; }
-  .zc-v.mono, .mono { font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; }
-  .zc-note { font-size: 12px; color: var(--faint); }
-  .zc-p { font-size: 12.5px; color: var(--faint); line-height: 1.65; }
-  .zc-actions { display: flex; gap: 8px; margin-top: 2px; flex-wrap: wrap; }
-  .zc-btn { font-size: 12.5px; padding: 6px 12px; border-radius: 10px; border: 1px solid var(--line); color: inherit; }
-  .zc-btn:disabled { opacity: .45; }
-  .zc-btn.link { text-decoration: none; text-align: center; }
-  .zc-btn:active { background: var(--card); }
 
   /* —— 空态问候（照 Claude 页的 .greeting：图标 + 一行大字）—— */
   .zc-hello { display: flex; flex-direction: column; align-items: center; gap: 14px; }
@@ -375,15 +327,11 @@
   .sb-handle:focus-visible .sb-pill { opacity: 1; transition-delay: 0s; }
   .zc-brand { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px 2px; flex: none; }
   .d-item { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; font-size: 14px; color: inherit; text-align: left; transition: background-color .12s ease; }
-  .d-item:active, .d-item.cur { background: var(--card); }
+  .d-item:active { background: var(--card); }
   .d-lead { width: 22px; height: 20px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
   .d-lead svg { width: 17px; height: 17px; }
-  /* 折叠组的 chevron：贴行尾，展开时转 180° */
-  .d-fold { margin-left: auto; width: 20px; height: 20px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--faint); transition: transform .15s ease; }
-  .d-fold svg { width: 14px; height: 14px; }
-  .d-fold.open { transform: rotate(180deg); }
-  .d-setup { display: flex; flex-direction: column; gap: 6px; padding: 2px 10px 8px 14px;
-    border-left: 1px solid var(--line); margin: 0 10px 4px 16px; }
+  .d-bub { position: relative; width: 20px; height: 20px; flex: none; display: flex; align-items: center; justify-content: center; }
+  .d-bub .pj { font-size: 18px; color: var(--serif, currentColor); font-family: var(--icons, inherit); line-height: 1; }
   .d-sec { color: var(--faint); font-size: 12px; padding: 14px 4px 4px 10px; }
   .d-list { display: flex; flex-direction: column; }
   .d-row { position: relative; display: flex; align-items: center; border-radius: 8px; margin-bottom: .5px; }
