@@ -17,7 +17,7 @@
   import { ui, rootScreen, toggleTheme, me } from '../lib/state.svelte.js';
   import { closePage } from '../lib/pageMorph.js';
   import { showToast } from '../lib/toast.svelte.js';
-  import { t, tr } from '../lib/i18n.js';
+  import { t, tr, tc } from '../lib/i18n.js';
 
   const single = $derived(rootScreen() === 'codex');
   const chat = $derived(cliChat.codex);
@@ -204,7 +204,7 @@
   </button>
   <!-- 接入设置 / 凭据 / 工作台三组已从侧栏移除（对齐 Claude 的极简结构）：
        状态看页头 chip 与空态引导，模型/思考深度在输入框胶囊里选，凭据走「设置 → Agent」，
-       工作台入口在页头的工作台按钮。 -->
+       工作台入口在页头的工作台按钮，换工作目录在下方「项目」行 / 输入框 cwd chip。 -->
   <div class="d-sec">{t('会话')}</div>
   <div class="d-list">
     {#each sessions as s (s.id)}
@@ -219,6 +219,17 @@
       </div>
     {/each}
     {#if !sessions.length}<div class="d-empty">{t('还没有会话')}</div>{/if}
+  </div>
+
+  <!-- 项目：Claude 侧栏同款（一行 = 当前工作目录，点击换目录——侧栏极简化后目录入口也在这儿） -->
+  <div class="d-sec">{tc('claude', '项目')}</div>
+  <div class="d-list">
+    <div class="d-row proj" title={cwd || ''}>
+      <button class="d-recent" onclick={() => { pickOpen = true; closeDrawer(); }}>
+        <span class="d-bub"><span class="ic pj" aria-hidden="true">&#xe0c9;</span></span>
+        <span class="d-title">{cwd ? (cwd.split(/[\\/]/).filter(Boolean).pop() || cwd) : '—'}</span>
+      </button>
+    </div>
   </div>
 
   <div class="d-spacer"></div>
@@ -324,6 +335,9 @@
   .d-more svg { width: 14px; height: 14px; }
   .d-more:active { opacity: 1; background: color-mix(in srgb, currentColor 10%, transparent); }
   .d-empty { font-size: 12.5px; opacity: .55; padding: 2px 10px 6px; }
+  /* 项目行（Claude 侧栏同款）：图标用同一份图标字形的盒盖字形 */
+  .d-bub { position: relative; width: 20px; height: 20px; flex: none; display: flex; align-items: center; justify-content: center; }
+  .d-bub .pj { font-size: 18px; color: var(--serif, currentColor); font-family: var(--icons, inherit); line-height: 1; }
   .d-spacer { flex: 1; min-height: 12px; }
   .d-foot { flex: none; padding-top: 6px; }
 </style>
