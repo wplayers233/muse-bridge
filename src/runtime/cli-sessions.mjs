@@ -62,11 +62,17 @@ function writeStore(ctx, store) {
   writeJson(storeFile(ctx), store, 0);
 }
 
+// 最近使用排前。updatedAt 是毫秒级，连续写入会落在同一毫秒：那时比较器返回 0，
+// 而 V8 的 sort 是稳定的，于是排成插入顺序（最旧的排最前）。实测同毫秒写入 200 次里
+// 有 152 次顺序错。用单调递增的 seq 做 tie-break——下面淘汰挑「最旧」的同样靠它，
+// 否则挤掉的会是该留下的那条。
+const byRecent = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0) || (b.seq || 0) - (a.seq || 0);
+
 // 某 agent 的会话（最近使用排前）。withMessages=false 时丢掉 messages（侧栏列表用，省带宽）。
 export function listCliSessions(ctx, agent, { withMessages = false } = {}) {
   if (!CLI_AGENTS.includes(agent)) return [];
   const sessions = readStore(ctx).sessions.filter((s) => s && s.agent === agent);
-  sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  sessions.sort(byRecent);
   if (withMessages) return sessions;
   return sessions.map(({ messages, ...meta }) => meta);
 }
@@ -87,6 +93,8 @@ export function saveCliSession(ctx, agent, rec = {}) {
   if (!sessionId) throw Object.assign(new Error('缺少会话号（sessionId），无法跨设备续聊'), { status: 400 });
   const now = Date.now();
   const store = readStore(ctx);
+  // 单调递增序号：updatedAt 只有毫秒精度，同毫秒并列时靠它定先后（见 byRecent）。
+  const seq = (Number.isInteger(store.seq) ? store.seq : 0) + 1;
   const id = str(rec.id, 100) || crypto.randomUUID();
   const prev = store.sessions.find((s) => s && s.id === id && s.agent === agent);
   const entry = {
@@ -97,17 +105,19 @@ export function saveCliSession(ctx, agent, rec = {}) {
     title: str(rec.title, 200) || '新会话',
     createdAt: (prev && prev.createdAt) || now,
     updatedAt: now,
+    seq,
     messages: normMessages(rec.messages),
   };
   const rest = store.sessions.filter((s) => s && !(s.id === id && s.agent === agent));
   rest.push(entry);
-  // 每家各自留最近 MAX_PER_AGENT 条（按 updatedAt 淘汰最旧）。
+  // 每家各自留最近 MAX_PER_AGENT 条（按 updatedAt 淘汰最旧，同毫秒按 seq）。
   const kept = [];
   for (const a of CLI_AGENTS) {
-    const mine = rest.filter((s) => s.agent === a).sort((x, y) => (y.updatedAt || 0) - (x.updatedAt || 0));
+    const mine = rest.filter((s) => s.agent === a).sort(byRecent);
     kept.push(...mine.slice(0, MAX_PER_AGENT));
   }
   store.version = 1;
+  store.seq = seq;
   store.sessions = kept;
   writeStore(ctx, store);
   return id;

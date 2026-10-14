@@ -4,7 +4,7 @@
 //   ③ 缓存：成功 5 分钟 / 失败 60 秒，缓存期不再起进程；没装不 spawn。
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -27,6 +27,13 @@ function stubAppServer(counter, body) {
   // 起进程即计数（垫片不执行，计数在真身里）。
   writeFileSync(js, `require('fs').appendFileSync(${JSON.stringify(counter)}, 'x\\n');\n` + body);
   writeFileSync(path.join(binDir, 'codex.cmd'), '@echo off\r\nnode "%~dp0\\..\\@openai\\codex\\bin\\codex.js" %*\r\n');
+  // 桩要两个平台都能跑：Windows 认上面的 .cmd（经 resolveWinShim 解析成包内真身），
+  // 而 findCliBin 的 BIN_NAMES 在非 win32 上只找【无扩展名】的 codex，且 resolveWinShim
+  // 非 win32 直接原样返回、不解析 .cmd —— 只写 .cmd 的话这些用例在 Linux 上必挂。
+  // 照同目录 agent-models.test.mjs 的写法补一份无扩展名入口。
+  const sh = path.join(binDir, 'codex');
+  writeFileSync(sh, '#!/bin/sh\nexec ' + JSON.stringify(process.execPath) + ' ' + JSON.stringify(js) + ' "$@"\n');
+  chmodSync(sh, 0o755);
   // findCliBin 在 PATH 目录的直接下层找 codex.cmd：PATH 要指到 .bin 那层。
   return binDir;
 }

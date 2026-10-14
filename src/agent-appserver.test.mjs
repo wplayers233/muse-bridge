@@ -2,7 +2,7 @@
 // 形状依据：codex-cli 0.162.1 `app-server generate-json-schema` 导出的官方 schema（U1/U2/U6 已复核）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 const mod = await import('./runtime/agent-appserver.mjs');
@@ -183,6 +183,11 @@ test('runAppServerTurn：消息循环里 sleep/评审/plan/patchUpdated/terminal
     mkdirSync(binDir, { recursive: true });
     writeFileSync(path.join(binDir, 'codex.cmd'), '@echo off\r\nnode "%~dp0\\..\\@openai\\codex\\bin\\codex.js" %*\r\n');
     writeFileSync(path.join(realDir, 'codex.js'), FAKE_CODEX);
+    // 桩要两个平台都能跑：BIN_NAMES 在非 win32 上只找【无扩展名】的 codex，而 resolveWinShim
+    // 非 win32 直接原样返回、不解析上面的 .cmd —— 只写 .cmd 的话这个用例在 Linux 上必挂。
+    const sh = path.join(binDir, 'codex');
+    writeFileSync(sh, '#!/bin/sh\nexec ' + JSON.stringify(process.execPath) + ' ' + JSON.stringify(path.join(realDir, 'codex.js')) + ' "$@"\n');
+    chmodSync(sh, 0o755);
     // BRIDGE_AGENT_BIN_DIR 置空 = 不用项目自带的 codex；PATH 前插 = 钉住只找到假货。
     const env = { ...process.env, BRIDGE_AGENT_BIN_DIR: '', PATH: binDir + path.delimiter + (process.env.PATH || '') };
     const events = [];
