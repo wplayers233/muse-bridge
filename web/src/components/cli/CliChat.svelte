@@ -385,9 +385,6 @@
 
 {#snippet composer(bottom)}
   <div class="composer" class:bottom>
-    {#if chat.sessionId && bottom}
-      <div class="sess"><span>{t('会话')}</span><code>{chat.sessionId}</code></div>
-    {/if}
     <!-- 输入卡照 dimensio：上层纯输入，下层控制条（左：+附件 / 工作目录；右：模型胶囊 + 圆形发送钮） -->
     <div class="boxwrap">
       {#if slashOpen}
@@ -589,8 +586,6 @@
 
   .composer { flex: none; width: 100%; max-width: 760px; margin: 0 auto; padding: 8px 2px 12px; display: flex; flex-direction: column; gap: 6px; }
   .composer.bottom { padding-bottom: calc(12px + var(--sab, 0px)); }
-  .sess { display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--faint, #8a8a86); }
-  .sess code { font-family: var(--mono, monospace); font-size: 11px; opacity: .8; }
   /* 输入卡照官方 PC 端 composer：圆角 ~22 的一层壳包住「纯输入区 + 44px 控制条」，壳内不再有第二道边框 */
   .box { display: flex; flex-direction: column; border: 1px solid var(--line, #3a3a38); border-radius: 22px;
     background: color-mix(in srgb, currentColor 5%, transparent); padding: 4px 8px 8px; }
