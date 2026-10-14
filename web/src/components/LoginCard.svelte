@@ -45,9 +45,15 @@
     try { insetTop = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat')) || 0; } catch {}
   }
   onMount(() => {
-    const upd = () => { vw = window.innerWidth; vh = window.innerHeight; readInset(); };
+    const upd = () => { vw = window.innerWidth; vh = window.innerHeight; readInset(); livePill = null; };
     upd(); window.addEventListener('resize', upd);
-    return () => window.removeEventListener('resize', upd);
+    // CSS 可能比首帧 mount 晚到：500ms 后再读一次 insetTop；切回前台时也重读（WebView
+    // 安全区事后变化不一定触发 resize）。胶囊静止位置已走 CSS var(--sat)，这里只影响卡片
+    // 居中兜底与形变回落值。
+    const retryTimer = setTimeout(readInset, 500);
+    const onVis = () => { if (!document.hidden) readInset(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { window.removeEventListener('resize', upd); clearTimeout(retryTimer); document.removeEventListener('visibilitychange', onVis); };
   });
   // 测量 pill 宽度：用隐藏探针测 label 的【自然宽度】（同字体样式）。
   // 不能测 plabel 自身——它的宽度被 width:${pillW}px 锁死，测回的是 pillW 自己
@@ -74,15 +80,28 @@
   const cardW = $derived(Math.min(CARD_W, vw - 24));
   const effH = $derived(Math.min(cardH, vh - insetTop - 24));
   const cardTop = $derived(Math.max(insetTop + 12, (vh - effH) / 2));
-  const dx = $derived(vw / 2 - (pillLeft + pillW / 2));
-  const dy = $derived(cardTop + effH / 2 - (pillTop + PILL_H / 2));
-  const baseGeom = $derived(`left:${pillLeft}px; top:${pillTop}px; width:${pillW}px; height:${PILL_H}px;`);
+  // 胶囊静止位置的 top 必须走 CSS var(--sat)（与左上「Muse Bridge」标题同源）：JS 快照的
+  // insetTop 只在 mount/resize 时读，CSS 还没生效或 WebView 安全区事后变化时快照就是错的，
+  // 胶囊会被钉在屏幕顶（压状态栏）、标题却正确落在安全区下——两者差的正是那段安全区高度。
+  const baseGeom = $derived(`left:${pillLeft}px; top:calc(var(--sat) + ${M}px); width:${pillW}px; height:${PILL_H}px;`);
+  // 形变偏移从胶囊的实时位置算（toggle 里抓的 getBoundingClientRect）：展开动画的起落点以
+  // 屏幕上真正的位置为准，不再信可能过期的 pillTop 快照。
+  let livePill = $state(null);   // { left, top, width } | null，未点开过时回落 JS 算的几何
+  const morphLeft = $derived(livePill?.left ?? pillLeft);
+  const morphTop = $derived(livePill?.top ?? pillTop);
+  const morphW = $derived(livePill?.width ?? pillW);
+  const dx = $derived(vw / 2 - (morphLeft + morphW / 2));
+  const dy = $derived(cardTop + effH / 2 - (morphTop + PILL_H / 2));
   const cardStyle = $derived(open
     ? `left:${(vw - cardW) / 2}px; top:${cardTop}px; width:${cardW}px; height:${effH}px; border-radius:30px;`
     : `${baseGeom} border-radius:22px;`);
   const plabelStyle = $derived(open ? `transform:translate(${dx}px,${dy}px); opacity:0; pointer-events:none;` : `transform:none; opacity:1;`);
 
-  function toggle() { ui.loginOpen = !ui.loginOpen; }
+  function toggle() {
+    // 点开前抓一次胶囊的实时位置（未形变状态，rect 就是胶囊位置），供展开动画起落点用。
+    try { const r = pillEl?.getBoundingClientRect(); if (r) livePill = { left: r.left, top: r.top, width: r.width }; } catch {}
+    ui.loginOpen = !ui.loginOpen;
+  }
   function close() { ui.loginOpen = false; err = ''; }
   function reset() { username = ''; password = ''; password2 = ''; invite = ''; tok = ''; err = ''; }
 

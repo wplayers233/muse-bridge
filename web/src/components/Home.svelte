@@ -74,8 +74,9 @@
 <style>
   .home { position: fixed; inset: 0; background: var(--bg); color: var(--text); overflow: hidden; }
   .brand {
-    position: fixed; top: calc(var(--sat) + 22px); left: 22px; z-index: 10; pointer-events: none;
-    font-family: var(--serif-stack); font-size: 19px; font-weight: 500; letter-spacing: .01em; color: var(--text);
+    /* 与右上 Admin 胶囊同线：胶囊高 40、顶距 sat+16，中心 sat+36；标题行高 24、顶距 sat+24，中心也是 sat+36。 */
+    position: fixed; top: calc(var(--sat) + 24px); left: 22px; z-index: 10; pointer-events: none;
+    font-family: var(--serif-stack); font-size: 19px; line-height: 24px; font-weight: 500; letter-spacing: .01em; color: var(--text);
   }
   .grid {
     position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 5;
