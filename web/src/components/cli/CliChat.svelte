@@ -495,7 +495,12 @@
   .chip-msg.err { color: var(--danger, #c0392b); }
   .chip-foot { display: flex; gap: 8px; margin-top: 2px; }
 
-  .feed { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 4px 16px; overscroll-behavior: contain; }
+  /* 消息列：与 Claude 页 Thread 完全同一套列规则（760px 居中、16px 侧边距）。
+     之前 .feed 没写 width/max-width，而父级 .stage 带 align-items: center、
+     .stage.feedmode 又没重置它——消息短时 .feed 会被挤成内容宽度居中，
+     看起来就是一根窄列；width:100% 把它钉满，顺带修了这个挤压。 */
+  .feed { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 16px 16px; overscroll-behavior: contain;
+    width: 100%; max-width: 760px; margin: 0 auto; }
   .row { padding: 6px 0; display: flex; flex-direction: column; gap: 6px; }
   .row.user { align-items: flex-end; }
 
