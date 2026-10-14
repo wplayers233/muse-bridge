@@ -1,9 +1,11 @@
-// Codex 的 coding plan 用量：问一次 `codex app-server` 的 account/rate_limits/read，缓存结果。
+// Codex 的 coding plan 用量：问一次 `codex app-server` 的 account/rateLimits/read，缓存结果。
 //
 // 为什么走 app-server：ChatGPT 套餐的额度窗口（5h / 周）只有官方客户端才有入口，exec 路没有；
-// app-server 的 account/rate_limits/read 正是官方桌面应用画那条用量条的同一条接口——
+// app-server 的 account/rateLimits/read 正是官方桌面应用画那条用量条的同一条接口——
 // planType（plus/pro/…）、primary/secondary 两个窗口的 usedPercent/resetsAt、credits 余额全在里面。
-// （0.162.1 官方 schema 实证：GetAccountRateLimitsResponse → RateLimitSnapshot → RateLimitWindow。）
+// 方法名随版本变：本机 0.149.0 只认驼峰 account/rateLimits/read，0.162.1 的 schema 里是下划线
+// account/rate_limits/read——先驼峰，报错再回退下划线，两边都认（0.162.1 官方 schema 实证：
+// GetAccountRateLimitsResponse → RateLimitSnapshot → RateLimitWindow。）
 // 这边只借它读一次，进程用完即收：不托管会话、不留常驻进程。
 //
 // 起进程约 1 秒，不该每次开菜单都跑：成功缓存 5 分钟、失败 60 秒（plan 是慢变量，比模型清单还能缓）。
@@ -54,7 +56,7 @@ export function normRateLimits(result) {
   };
 }
 
-// 一次性子进程：initialize → initialized → account/rate_limits/read，拿到就走。
+// 一次性子进程：initialize → initialized → account/rateLimits/read（报错回退 account/rate_limits/read），拿到就走。
 // 任何一步失败（子命令不存在、超时、坏 JSON、上游 error）都回 null——调用方据此隐藏，不抛。
 function askAppServer(bin, env) {
   return new Promise((resolve) => {
@@ -111,7 +113,7 @@ function askAppServer(bin, env) {
         try { msg = JSON.parse(line); } catch { continue; }
         if (msg.id != null && waiters.has(msg.id)) {
           const res = waiters.get(msg.id); waiters.delete(msg.id);
-          res(msg.error ? null : msg.result);
+          res(msg);   // 整条回给调用方：它要看 error 才能决定要不要回退旧方法名
         }
       }
     });
@@ -119,9 +121,18 @@ function askAppServer(bin, env) {
     after(HANDSHAKE_TIMEOUT_MS, () => finish(null));
     (async () => {
       const init = await call('initialize', { clientInfo: { name: 'muse-bridge', title: 'Muse Bridge', version: '1.0.0' } });
-      if (!init) return finish(null);
+      if (!init || init.error) return finish(null);
       try { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized', params: {} }) + '\n'); } catch {}
-      const rl = await call('account/rate_limits/read', {});
+      // 先驼峰 account/rateLimits/read（本机 0.149.0 只认这个）；上游 error（unknown variant）
+      // 才回退下划线 account/rate_limits/read（0.162.1 的名字）。超时不回退——app-server 挂了
+      // 的话重问也一样挂，还多等 8 秒。
+      let rl = null;
+      const first = await call('account/rateLimits/read', {});
+      if (first && !first.error) rl = first.result;
+      else if (first && first.error) {
+        const legacy = await call('account/rate_limits/read', {});
+        if (legacy && !legacy.error) rl = legacy.result;
+      }
       finish(normRateLimits(rl));
     })();
   });

@@ -1,7 +1,8 @@
-// Codex coding plan（走官方 app-server 的 account/rate_limits/read）：钉住
-//   ① 帧协议与归一——initialize → account/rate_limits/read → {planType, primary{usedPercent,...}, credits}；
+// Codex coding plan（走官方 app-server 的 account/rateLimits/read，旧版叫 account/rate_limits/read）：钉住
+//   ① 帧协议与归一——initialize → account/rateLimits/read → {planType, primary{usedPercent,...}, credits}；
 //   ② API-key / 未登录（上游 error 或缺 rateLimits）一律 null，不抛；
 //   ③ 缓存：成功 5 分钟 / 失败 60 秒，缓存期不再起进程；没装不 spawn。
+//   ④ 方法名兼容：驼峰报错（unknown variant）→ 回退下划线；两边都报错才 null。
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -50,7 +51,7 @@ process.stdin.on('data', (c) => {
     let m; try { m = JSON.parse(line); } catch { continue; }
     const reply = (result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result }) + '\\n');
     if (m.method === 'initialize') reply({ userAgent: 'stub/1.0' });
-    else if (m.method === 'account/rate_limits/read') reply({
+    else if (m.method === 'account/rateLimits/read') reply({
       accountId: 'acc_1',
       rateLimits: {
         planType: 'plus',
@@ -77,7 +78,7 @@ test('normRateLimits：schema 形状 → 界面要的三个数；缺 primary = �
   assert.equal(normRateLimits({ rateLimits: { primary: { usedPercent: 'NaN?' } } }), null, 'usedPercent 非数字 = 无 plan');
 });
 
-test('桩 app-server：握手 → rate_limits/read → 归一 plan；缓存期内不再起进程', async () => {
+test('桩 app-server：握手 → rateLimits/read → 归一 plan；缓存期内不再起进程', async () => {
   resetPlanCache();
   const counter = path.join(mkdtempSync(path.join(os.tmpdir(), 'cnt-')), 'n.txt');
   const dir = stubAppServer(counter, REPLY_RL);
@@ -100,17 +101,43 @@ test('桩 app-server：握手 → rate_limits/read → 归一 plan；缓存期�
   assert.equal(forced, before + 1, 'force 要真的重跑一次');
 });
 
-test('上游 error / 进程秒退：回 null，不抛也不卡死；失败也要短缓存', async () => {
+test('旧版 app-server：驼峰报 unknown variant → 回退下划线，一样拿到 plan', async () => {
   resetPlanCache();
   const counter = path.join(mkdtempSync(path.join(os.tmpdir(), 'cnt-')), 'n.txt');
-  // rate_limits/read 一律回 error
+  // 只认下划线：驼峰回 -32600 unknown variant，下划线给正常数据
   const dir = stubAppServer(counter, `
 let buf='';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data',(c)=>{ buf+=c; let i;
   while((i=buf.indexOf('\\n'))>=0){ const line=buf.slice(0,i); buf=buf.slice(i+1);
     if(!line.trim())continue; let m; try{m=JSON.parse(line);}catch{continue;}
-    process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-32601,message:'no such method'}})+'\\n');
+    const reply=(result)=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');
+    const err=(code,message)=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code,message}})+'\\n');
+    if(m.method==='initialize') reply({userAgent:'stub/1.0'});
+    else if(m.method==='account/rateLimits/read') err(-32600,'Invalid request: unknown variant \`account/rateLimits/read\`');
+    else if(m.method==='account/rate_limits/read') reply({ rateLimits: { planType: 'pro', primary: { usedPercent: 11, resetsAt: 1760000000, windowDurationMins: 300 }, secondary: null, credits: { balance: null, hasCredits: false, unlimited: false } } });
+  }});
+setTimeout(()=>process.exit(0),20000);
+`);
+  const env = { ...process.env, PATH: dir + path.delimiter + process.env.PATH, BRIDGE_AGENT_BIN_DIR: '' };
+  const plan = await codexPlan({ env });
+  assert.equal(plan.planType, 'pro');
+  assert.equal(plan.primary.usedPercent, 11);
+  assert.equal(plan.credits, null, 'credits.balance 为 null → 整段 credits 不显示，余额行不带余额');
+});
+
+test('上游 error / 进程秒退：回 null，不抛也不卡死；失败也要短缓存', async () => {
+  resetPlanCache();
+  const counter = path.join(mkdtempSync(path.join(os.tmpdir(), 'cnt-')), 'n.txt');
+  // 两边方法名都回 error（API-key 模式常见）：回退也失败 → null
+  const dir = stubAppServer(counter, `
+let buf='';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data',(c)=>{ buf+=c; let i;
+  while((i=buf.indexOf('\\n'))>=0){ const line=buf.slice(0,i); buf=buf.slice(i+1);
+    if(!line.trim())continue; let m; try{m=JSON.parse(line);}catch{continue;}
+    if(m.method==='initialize') process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{userAgent:'stub/1.0'}})+'\\n');
+    else process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-32601,message:'no such method'}})+'\\n');
   }});
 setTimeout(()=>process.exit(0),20000);
 `);
