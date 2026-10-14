@@ -20,6 +20,7 @@ const blank = (agent) => ({
   busy: false,
   error: '',
   cwd: '',          // 服务端这一轮用的工作目录（meta 事件带回）
+  turnId: '',       // codex 后台轮次的 id（meta 事件带回；断线重连 / 显式停止用）
   seq: 0,
 });
 
@@ -224,12 +225,13 @@ function snapshot(agent) {
 export const cliActiveId = (agent) => activeId[agent];
 
 // 开一段新会话：先把当前这段收进列表，再把 cliChat 复位（空 = 没聊过）。
+// 注意只 detach 不杀：codex 的轮次如果还在跑，会留在「后台运行中」继续跑。
 export function cliNew(agent) {
-  cliStop(agent);
+  cliDetach(agent);
   snapshot(agent);
   activeId[agent] = newId();
   const c = cliChat[agent];
-  c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.seq = 0;
+  c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.turnId = ''; c.seq = 0;
   persist();
 }
 
@@ -237,7 +239,7 @@ export function cliNew(agent) {
 // 点开时先取服务端的完整快照再装进来；本机自己的条目不走网络。
 export async function cliPick(agent, id) {
   if (id === activeId[agent]) return;
-  cliStop(agent);
+  cliDetach(agent);   // 只断流不杀：codex 后台轮次切走后继续跑
   snapshot(agent);
   const rec = cliSessions[agent].find((s) => s.id === id);
   if (!rec) return;
@@ -282,10 +284,95 @@ export function cliDrop(agent, id) {
 }
 
 export function cliStop(agent) {
+  // 用户亲手点的「停止」：codex 后台轮次只 abort 请求不断进程——要真停，
+  // 得显式告诉服务端杀掉这一轮。
+  const c = cliChat[agent];
+  if (agent === 'codex' && c.turnId) {
+    const turnId = c.turnId;
+    c.turnId = '';
+    fetch(apiUrl('/api/codex/turns/stop'), {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      credentials: 'same-origin',
+      body: JSON.stringify({ turnId }),
+    }).catch(() => {});
+  }
+  cliDetach(agent);
+}
+
+// 只断开当前的流，不碰服务端。codex 后台轮次切会话/切页面时用——
+// 那一轮在服务器上继续跑，回来还能从「后台运行中」接上。
+function cliDetach(agent) {
   const ac = controls[agent];
   if (ac) { try { ac.abort(); } catch {} controls[agent] = null; }
   const c = cliChat[agent];
   if (c.busy) c.busy = false;
+}
+
+// ── Codex 后台轮次：接上 / 列表 ─────────────────────────────────────────────
+
+// 后台轮次列表（「后台运行中」用）。codex 专用；轻量，不含事件体。
+export const codexTurns = $state({ list: [], at: 0 });
+let codexTurnsLoading = false;
+export async function loadCodexTurns() {
+  if (codexTurnsLoading) return codexTurns.list;
+  codexTurnsLoading = true;
+  try {
+    const r = await fetch(apiUrl('/api/codex/turns'), { headers: authHeaders(), credentials: 'same-origin' });
+    const j = await r.json().catch(() => null);
+    if (r.ok && j && Array.isArray(j.turns)) { codexTurns.list = j.turns; codexTurns.at = Date.now(); }
+  } catch {}
+  codexTurnsLoading = false;
+  return codexTurns.list;
+}
+
+// 接上一个后台轮次（「后台运行中」列表点进来）：先静默断开当前流（不杀服务端那轮），
+// 再开一条 attach 流——先吐缓冲 replay，再转实时。
+export async function cliAttachTurn(agent, turnId) {
+  if (agent !== 'codex' || !turnId) return;
+  turnId = String(turnId);
+  if (cliChat[agent].turnId === turnId && controls[agent]) return; // 已经在看这一轮
+  cliDetach(agent);
+  snapshot(agent);
+  activeId[agent] = 'turn-' + turnId;
+  const c = cliChat[agent];
+  c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.turnId = turnId; c.seq = 0;
+  c.busy = true;
+  const itemId = ++c.seq;
+  c.items.push({ role: 'agent', id: itemId, text: '', reasoning: '', tools: [], todos: [], notes: [], approvals: [], error: '', auth: false, status: 'running', usage: null });
+  const ac = new AbortController();
+  controls[agent] = ac;
+  try {
+    const res = await fetch(apiUrl('/api/codex/turns/attach?turnId=' + encodeURIComponent(turnId)), {
+      headers: authHeaders(), credentials: 'same-origin', signal: ac.signal,
+    });
+    if (!res.ok) {
+      let msg = 'HTTP ' + res.status;
+      try { const j = await res.json(); if (j && j.error) msg = String(j.error); } catch {}
+      applyEvent(agent, itemId, { type: 'error', message: msg });
+      return;
+    }
+    let metaSeen = false;
+    await pump(res, (ev) => {
+      // attach 时本地没有用户那条消息：meta 里带了 prompt 摘要，补一条放在最前面。
+      if (!metaSeen && ev.type === 'meta') {
+        metaSeen = true;
+        if (ev.prompt) c.items.unshift({ role: 'user', id: ++c.seq, text: String(ev.prompt), status: 'done' });
+      }
+      applyEvent(agent, itemId, ev);
+    }, ac.signal);
+  } catch (e) {
+    if (e && e.name !== 'AbortError') {
+      applyEvent(agent, itemId, { type: 'error', message: (e && e.message) || String(e) });
+    }
+  } finally {
+    if (controls[agent] === ac) controls[agent] = null;
+    c.busy = false;
+    const m = c.items.find((i) => i.id === itemId);
+    if (m && m.status === 'running') m.status = 'interrupted';
+    snapshot(agent);
+    loadCodexTurns();   // attach 的流断了也刷新一下（那轮可能在别处跑完了）
+  }
 }
 
 // 工具行的补充载荷：命令输出、退出码、改动文件、搜索词、入参。
@@ -308,7 +395,25 @@ function applyEvent(agent, itemId, ev) {
   const m = c.items.find((i) => i.id === itemId);
   if (!m) return;
   switch (ev.type) {
-    case 'meta': if (ev.cwd) c.cwd = ev.cwd; break;
+    case 'meta': {
+      if (ev.cwd) c.cwd = ev.cwd;
+      // codex 后台轮次：meta 里带 turnId。快照 id 与服务端对齐成 'turn-<turnId>'，
+      // 这样两边存的是同一条，侧栏不会出现两条。
+      // 只在新开会话时对齐（c.sessionId 为空）：续聊时沿用原来那条的 id。
+      if (agent === 'codex' && ev.turnId) {
+        c.turnId = String(ev.turnId);
+        if (!c.sessionId) {
+          const nid = 'turn-' + c.turnId;
+          if (activeId[agent] !== nid) {
+            const list = cliSessions[agent];
+            const i = list.findIndex((s) => s.id === activeId[agent]);
+            if (i >= 0) list[i].id = nid;
+            activeId[agent] = nid;
+          }
+        }
+      }
+      break;
+    }
     case 'start': if (ev.sessionId) c.sessionId = ev.sessionId; break;
     case 'session': if (ev.sessionId) c.sessionId = ev.sessionId; break;
     case 'text': m.text += String(ev.text || ''); break;
@@ -347,7 +452,7 @@ function applyEvent(agent, itemId, ev) {
         cwd: String(ev.cwd || ''),
         changes: Array.isArray(ev.changes) ? ev.changes : [],
         decisions: Array.isArray(ev.decisions) ? ev.decisions : [],
-        answer: '',      // 用户选了什么（空 = 还没答）
+        answer: String(ev.answered || ''), // 重连重放时：已回答的卡直接标已处理，不再弹窗
         err: '',
       });
       break;
@@ -412,6 +517,8 @@ export async function cliSend(agent, prompt, images = []) {
     const m = c.items.find((i) => i.id === itemId);
     if (m && m.status === 'running') m.status = 'interrupted';
     snapshot(agent);   // 这一轮收尾后写回侧栏列表（标题取第一条用户消息、会话号存下来供续聊）
+    // codex 后台轮次：跑完刷新「后台运行中」列表（这轮从在跑里消失）。
+    if (agent === 'codex') loadCodexTurns();
   }
 }
 

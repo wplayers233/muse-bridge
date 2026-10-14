@@ -1,8 +1,12 @@
 // Codex / ZCode 分页的服务面（外部 CLI agent）。
 //
 //   GET  /api/agents/status     这台机器上每个 agent 装了没 / 认证了没（登录即可看，分页的「接入」卡用）
-//   POST /api/codex/chat        { prompt, sessionId? } → SSE（归一事件流，见 runtime/agent-cli.mjs）
-//   POST /api/zcode/chat        同上
+//   POST /api/codex/chat        { prompt, sessionId? } → SSE（归一事件流；
+//                               这一轮是后台轮次：断开不断进程，见 runtime/codex-turns.mjs）
+//   POST /api/zcode/chat        同上（zcode 还是老语义：断开即杀，见下）
+//   GET  /api/codex/turns       在跑 + 最近完成的轮次（「后台运行中」列表用）
+//   GET  /api/codex/turns/attach ?turnId= → SSE（先吐缓冲再转实时，断线重连用）
+//   POST /api/codex/turns/stop  { turnId } → 显式停一轮
 //   POST /api/codex/cwd         { path } → 改这个 agent 的工作目录（每个软件一间自己的文件夹）
 //   POST /api/zcode/cwd         同上
 //   GET  /api/codex/models      codex 能用的模型 + 每个模型的可选思考深度（走官方 app-server 的 model/list）
@@ -19,13 +23,19 @@
 // ctx.allowZcode——全局开关 ∩ 按人授权）。这两个 agent 目前 multiUser:false，所以实际只有管理员过。
 // 写操作受 server.mjs 全局 Origin 闸保护（POST 在前台，跨站表单发不进来）。
 //
-// 一轮对话 = 一个 CLI 子进程；客户端断开（req 'close'）立刻 abort，不留孤儿进程。
+// 一轮对话 = 一个 CLI 子进程。
+//   codex：后台轮次——客户端断开只退订，不断进程（跟 Claude 一样）；
+//          停一轮要显式调 POST /api/codex/turns/stop，同会话重发会自动顶掉旧的。
+//   zcode：保持老语义——客户端断开（req 'close'）立刻 abort，不留孤儿进程。
 
 import { readBody } from '../runtime/body.mjs';
 import { requireCtx } from '../runtime/identity.mjs';
 import { agentStatusList, findCliBin, refreshAgentProbes } from '../runtime/agent-status.mjs';
-import { CLI_AGENTS, CLI_MISSING_NOTE, runCliTurn } from '../runtime/agent-cli.mjs';
-import { runAppServerTurn, appServerAvailable } from '../runtime/agent-appserver.mjs';
+import { runCliTurn, CLI_AGENTS, CLI_MISSING_NOTE } from '../runtime/agent-cli.mjs';
+import {
+  codexCallerKey, startCodexTurn, attachCodexTurn, stopCodexTurn,
+  listCodexTurns, findCodexTurn, answerCodexApproval,
+} from '../runtime/codex-turns.mjs';
 import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs } from '../runtime/cli-cwd.mjs';
 import { listCliSessions, getCliSession, saveCliSession, deleteCliSession } from '../runtime/cli-sessions.mjs';
 import { cliSpawnKeyEnv, cliDataEnv, keyDirFor, setAgentKey, agentKeyState, isKeyAgent } from '../runtime/agent-keys.mjs';
@@ -63,13 +73,12 @@ const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'applic
 
 // ── 审批的往返 ───────────────────────────────────────────────────────────────
 // app-server 会反过来问客户端「这条命令能不能跑」，而我们的界面在浏览器里。
-// 于是：这一轮跑着的 generator 拿着一个 promise 等，卡片经 SSE 推给界面，
-// 用户点按钮 POST 回来，这里 resolve —— 答案才回到 CLI。
+// 等答案的 promise 现在挂在 turn 上（runtime/codex-turns.mjs 的 turnWaitApproval），
+// 不再活在单次请求的作用域里——手机断开回来，卡片照样能点；15 分钟没人点按拒绝收。
 //
-// 键是 `<这一轮>:<app-server 给的序号>`：app-server 内部的序号每进程从 1 开始数，
-// 不加轮次前缀会跨轮撞车。
-const pendingApprovals = new Map();     // key -> resolve({decision})
-const APPROVAL_WAIT_MS = 5 * 60_000;    // 没人答就按拒绝收（别让 CLI 一直挂着）
+// 键是 `<turnId>:<app-server 给的序号>`：app-server 内部的序号每进程从 1 开始数，
+// 不加轮次前缀会跨轮撞车；现在前缀是稳定的 turnId（原来是单次请求的 turnKey），
+// 重连回来点的还是同一张卡。
 
 // 上游只认这几个决策（见 CommandExecutionRequestApprovalResponse 的枚举）。
 // 界面按 availableDecisions 摆按钮，但落库前一律过这道白名单——别让前端随手传个字符串
@@ -85,17 +94,6 @@ export function normApprovalDecision(raw) {
   return null;
 }
 
-function waitForApproval(turnKey, approvalId) {
-  const key = turnKey + ':' + approvalId;
-  return new Promise((resolve) => {
-    pendingApprovals.set(key, resolve);
-    const t = setTimeout(() => {
-      if (pendingApprovals.has(key)) { pendingApprovals.delete(key); resolve({ decision: 'decline' }); }
-    }, APPROVAL_WAIT_MS);
-    t.unref?.();
-  });
-}
-
 // 归一事件 → SSE 行。
 const sseOpen = (res) => {
   res.writeHead(200, {
@@ -106,6 +104,25 @@ const sseOpen = (res) => {
   });
 };
 const sseSend = (res, ev) => { try { res.write('data: ' + JSON.stringify(ev) + '\n\n'); } catch {} };
+
+// ── Codex 后台轮次的 chat 入口 ──────────────────────────────────────────────
+// 跟原来（zcode 现在还是）的区别只有一点：这一轮的生命周期跟 HTTP 请求解绑。
+// res 断开只退订，不断进程；turn 在后台继续跑，回来调 /api/codex/turns/attach 接上。
+// 选路（app-server / exec 回落）、审批等待、事件缓冲全在 runtime/codex-turns.mjs 里。
+async function codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd }) {
+  // env/keyEnv：每身份注入——user 用自己的 key（<dataDir>/agents）+ 自己的 CLI 数据目录
+  // （CODEX_HOME，见 runtime/agent-keys.mjs）；admin 不设目录 = 继承宿主。
+  const spawnEnv = { ...process.env, ...cliDataEnv(ctx) };
+  const keyEnv = cliSpawnKeyEnv(ctx, 'codex');
+  const r = await startCodexTurn({
+    key: codexCallerKey(ctx), dataDir: ctx.dataDir, prompt, sessionId, images, cwd,
+    model: prefs.model, effort: prefs.effort, env: spawnEnv, keyEnv,
+  });
+  if (!r.ok) return json(res, 409, { error: r.error });
+  // 挂上 SSE：先 replay 已缓冲的，再转实时。断开只退订（attachCodexTurn 内部处理），
+  // 不杀 turn——这就是跟原来不一样的地方。
+  await attachCodexTurn(r.turn, res);
+}
 
 export function registerAgentCliRoutes(router, { identify }) {
   const allow = (ctx, agent) => (agent === 'codex' ? ctx.allowCodex : ctx.allowZcode);
@@ -202,6 +219,12 @@ export function registerAgentCliRoutes(router, { identify }) {
         try { images = await saveImages(cwd, body.images); }
         catch (e) { return json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) }); }
       }
+      // Codex 走后台轮次（runtime/codex-turns.mjs）：这一轮的生命周期跟 HTTP 请求解绑，
+      // 客户端断开只退订、不杀进程，回来调 /api/codex/turns/attach 接上。
+      // zcode 保持原样：断开即杀（下面那套）。
+      if (agent === 'codex') {
+        return codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd });
+      }
       const ac = new AbortController();
       let gone = false;
       // 客户端断开 → 立刻 abort（generator 那边按进程组杀 CLI 的整棵树）。
@@ -212,36 +235,19 @@ export function registerAgentCliRoutes(router, { identify }) {
 
       sseOpen(res);
       sseSend(res, { type: 'meta', agent, cwd, sessionId });
-      // 这一轮的审批等待者（用户点卡片时 POST 回来 resolve；见 /api/codex/approval）。
-      const turnKey = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
       try {
-        // codex 有 app-server 就走新路：审批、会话托管、流式正文、图片附件（localImage）全在里面。
-        // 老版本没有这个子命令就回落 exec（老路还能用，只是没有审批卡）。
         // env/keyEnv：每身份注入——user 用自己的 key（<dataDir>/agents）+ 自己的 CLI 数据目录
         // （CODEX_HOME / ZCODE_DATA_BASE_DIR，见 runtime/agent-keys.mjs）；admin 不设目录 = 继承宿主。
         const spawnEnv = { ...process.env, ...cliDataEnv(ctx) };
         const keyEnv = cliSpawnKeyEnv(ctx, agent);
-        const useAppServer = agent === 'codex' && await appServerAvailable();
-        const stream = useAppServer
-          ? runAppServerTurn(agent, {
-            prompt, images, threadId: sessionId, cwd, model: prefs.model, effort: prefs.effort, signal: ac.signal,
-            env: spawnEnv, keyEnv,
-            onServerRequest: (method, params, approvalId) => waitForApproval(turnKey, approvalId),
-          })
-          : runCliTurn(agent, { prompt, sessionId, cwd, model: prefs.model, effort: prefs.effort, images, signal: ac.signal, env: spawnEnv, keyEnv });
+        const stream = runCliTurn(agent, { prompt, sessionId, cwd, model: prefs.model, effort: prefs.effort, images, signal: ac.signal, env: spawnEnv, keyEnv });
         for await (const ev of stream) {
           if (gone) break;
-          // 审批卡的 id 加上这一轮的前缀：同名 id 在不同轮之间不会撞（app-server 内部从 1 开始数）。
-          if (ev.type === 'approval') ev.id = turnKey + ':' + ev.id;
           sseSend(res, ev);
         }
       } catch (e) {
         sseSend(res, { type: 'error', message: (e && e.message) || String(e) });
       } finally {
-        // 这一轮结束（或客户端断了）：还挂着的审批一律按「拒绝」收掉，别把 promise 留在表里。
-        for (const [k, r] of pendingApprovals) {
-          if (k.startsWith(turnKey + ':')) { pendingApprovals.delete(k); r({ decision: 'decline' }); }
-        }
         try { res.end(); } catch {}
       }
     });
@@ -265,7 +271,8 @@ export function registerAgentCliRoutes(router, { identify }) {
     });
   }
 
-  // 回答一张审批卡。id 是 SSE 里 approval 事件的 id（形如 <这一轮>:<序号>）；
+  // 回答一张审批卡。id 是 SSE 里 approval 事件的 id（形如 <turnId>:<序号>，
+  // turnId 跟着 turn 走，重连回来点的还是同一张卡）；
   // decision 是上游枚举里的一个（accept / acceptForSession / decline / cancel），
   // 或 {acceptWithExecpolicyAmendment:{…}}。找不到那一条就回 404（多半是这一轮已经收尾了）。
   router.on('POST', '/api/codex/approval', async (req, res) => {
@@ -278,10 +285,41 @@ export function registerAgentCliRoutes(router, { identify }) {
     const decision = normApprovalDecision(body.decision);
     if (!id) return json(res, 400, { error: '缺 id' });
     if (!decision) return json(res, 400, { error: '这个决定上游不认' });
-    const resolve = pendingApprovals.get(id);
-    if (!resolve) return json(res, 404, { error: '这张卡已经过期了（这一轮结束了，或等太久超时了）' });
-    pendingApprovals.delete(id);
-    resolve({ decision });
+    const r = answerCodexApproval(codexCallerKey(ctx), id, decision);
+    if (!r.ok) return json(res, 404, { error: r.error });
+    json(res, 200, { ok: true });
+  });
+
+  // ── Codex 后台轮次：列表 / 重连 / 停止 ─────────────────────────────────────
+  // 在跑 + 最近完成的轮次（「后台运行中」列表用；轻量，不含事件体）。
+  router.on('GET', '/api/codex/turns', (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    json(res, 200, { ok: true, turns: listCodexTurns(codexCallerKey(ctx)) });
+  });
+
+  // 断线重连：先吐这一轮缓冲里的事件，再转实时订阅。turn 已经结束时直接吐完收尾。
+  router.on('GET', '/api/codex/turns/attach', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    let turnId = '';
+    try { turnId = new URL(req.url, 'http://x').searchParams.get('turnId') || ''; } catch {}
+    const turn = findCodexTurn(codexCallerKey(ctx), turnId);
+    if (!turn) return json(res, 404, { error: '找不到这一轮（可能已经结束了很久）' });
+    await attachCodexTurn(turn, res);
+  });
+
+  // 显式停一轮（前端「停止」按钮 / 同会话顶掉 / 并发上限走同一条）。
+  router.on('POST', '/api/codex/turns/stop', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const r = stopCodexTurn(codexCallerKey(ctx), String(body.turnId || ''));
+    if (!r.ok) return json(res, 404, { error: r.error });
     json(res, 200, { ok: true });
   });
 

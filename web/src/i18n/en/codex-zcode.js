@@ -16,6 +16,7 @@ export default {
   '会话': 'Session',
   '工作目录': 'Workspace',
   '还没有会话': 'No sessions yet',
+  '后台运行中': 'Running in background',
   '删除': 'Delete',
   '你好': 'Hey there',
   '你好，{name}': 'Hey there, {name}',

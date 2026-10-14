@@ -11,7 +11,7 @@
   import CodexCustomizePage from './cli/CodexCustomizePage.svelte';
   import AccountCard from './AccountCard.svelte';
   import { cliChat, cliNew, cliPick, cliDrop, cliSessions, cliActiveId, cliStatus, loadCliStatus, statusOf, cwdOf, setCliCwd,
-    loadCliModels, syncSessions } from '../lib/cliChat.svelte.js';
+    loadCliModels, syncSessions, codexTurns, loadCodexTurns, cliAttachTurn } from '../lib/cliChat.svelte.js';
   import { cliDock, cliDockOpen, cliDockClose, setCliDockWs } from '../lib/cliDock.svelte.js';
   import { layout, makeSideYield } from '../lib/layout.svelte.js';
   import { createSidebarWidth } from '../lib/sbWidth.svelte.js';
@@ -84,7 +84,15 @@
     syncSessions();
     // 模型清单单独拉（服务端要起一次 app-server 读 model/list，约一秒；那边缓存 10 分钟）。
     loadCliModels();
+    // 后台轮次：进页拉一次；手机切回前台再拉一次（关屏期间可能跑完/新开）。
+    loadCodexTurns();
+    const onVis = () => { if (!document.hidden) loadCodexTurns(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
   });
+
+  // 后台运行中的轮次（「后台运行中」分区用）。curId 在对齐后是 'turn-<turnId>' 形态。
+  const liveTurns = $derived(codexTurns.list.filter((x) => x && x.status === 'running'));
 
   function exit() { if (!single) closePage('codex'); }
   const stateText = $derived(!st || cliStatus.loading ? t('正在读取状态…')
@@ -207,6 +215,22 @@
     aria-current={customizeOpen ? 'page' : undefined}>
     <span class="d-lead" aria-hidden="true"><span class="d-bag">&#xe100;</span></span>{t('自定义')}
   </button>
+  <!-- 后台运行中：服务器上还在跑的轮次（手机断开也不停）。点一条接上，看完整过程；
+       列表只放 running 的，跑完自动消失（loadCodexTurns 在进页/回前台/收尾时刷新）。 -->
+  {#if liveTurns.length}
+    <div class="d-sec">{t('后台运行中')}</div>
+    <div class="d-list">
+      {#each liveTurns as tn (tn.turnId)}
+        <div class="d-row" class:cur={'turn-' + tn.turnId === curId}>
+          <button class="d-recent" onclick={() => { cliAttachTurn('codex', tn.turnId); closeDrawer(); }}>
+            <span class="d-dot" aria-hidden="true"></span>
+            <span class="d-title">{tn.prompt || t('新会话')}</span>
+            <span class="d-at">{when(tn.startedAt)}</span>
+          </button>
+        </div>
+      {/each}
+    </div>
+  {/if}
   <div class="d-sec">{t('会话')}</div>
   <div class="d-list">
     {#each sessions as s (s.id)}
@@ -331,6 +355,10 @@
   .d-recent:active { background: color-mix(in srgb, currentColor 8%, transparent); }
   .d-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .d-at { flex: none; font-size: 11px; opacity: .55; }
+  /* 后台运行中：标题前一颗呼吸绿灯，表示「服务器上还在跑」。 */
+  .d-dot { flex: none; align-self: center; width: 7px; height: 7px; border-radius: 50%;
+    background: #22c55e; animation: d-dot-pulse 1.6s ease-in-out infinite; }
+  @keyframes d-dot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   .d-more { width: 28px; height: 28px; margin-right: 2px; border-radius: 6px; flex: none; display: flex;
     align-items: center; justify-content: center; opacity: .55; }
   .d-more svg { width: 14px; height: 14px; }
