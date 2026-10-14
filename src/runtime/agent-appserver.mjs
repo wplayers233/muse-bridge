@@ -480,7 +480,17 @@ export async function* runAppServerTurn(agent, o = {}) {
         if (p.delta) { sawAgentDelta = true; yield { type: 'text', text: String(p.delta) }; }
         continue;
       }
-      if (m === 'item/reasoning/delta' || m === 'item/reasoningSummary/delta') {
+      // 思考增量的方法名以官方协议为准：`codex app-server generate-json-schema` 导出的
+      // ServerNotification.json 里，item/reasoning/* 只有三个 ——
+      //   item/reasoning/textDelta         思考正文增量（ReasoningTextDeltaNotification，
+      //                                   字段：contentIndex, delta, itemId, threadId, turnId）
+      //   item/reasoning/summaryTextDelta  思考摘要增量（ReasoningSummaryTextDeltaNotification，
+      //                                   字段：delta, itemId, summaryIndex, threadId, turnId）
+      //   item/reasoning/summaryPartAdded  每段摘要开始的边界标记（无 delta，不带文本）
+      // 以前这里监听的是 item/reasoning/delta 与 item/reasoningSummary/delta，
+      // 两个名字在官方协议里根本不存在，是死分支——思考增量一条都收不到。
+      // 载荷字段确实是 delta，不用动。
+      if (m === 'item/reasoning/textDelta' || m === 'item/reasoning/summaryTextDelta') {
         if (p.delta) { sawReasoningDelta = true; yield { type: 'reasoning', text: String(p.delta) }; }
         continue;
       }
@@ -521,7 +531,17 @@ export async function* runAppServerTurn(agent, o = {}) {
         }
         if (item.type === 'agentMessage' && phase === 'started') { sawAgentDelta = false; continue; }
         if (item.type === 'reasoning') {
-          if (phase === 'completed' && item.text && !sawReasoningDelta) yield { type: 'reasoning', text: String(item.text) };
+          // 回退：增量没流出来时（比如非流式一轮），用 item/completed 里的 reasoning item 兜底。
+          // 别读 text 字段 —— 官方 schema 里 ReasoningThreadItem 只有 type/id/summary/content
+          // 四个顶层字段，summary 与 content 都是字符串数组，根本没有 text；以前读了个不存在的
+          // 字段，值永远是 undefined，这个回退形同虚设。两个数组有文本就拼起来（元素按 schema 是字符串；
+          // 顺手兼容对象形式的 {text}，免得上游哪天换形状又哑火）。
+          if (phase === 'completed' && !sawReasoningDelta) {
+            const parts = [...(Array.isArray(item.summary) ? item.summary : []), ...(Array.isArray(item.content) ? item.content : [])]
+              .map((b) => (typeof b === 'string' ? b : (b && typeof b.text === 'string' ? b.text : '')))
+              .filter(Boolean);
+            if (parts.length) yield { type: 'reasoning', text: parts.join('\n') };
+          }
           if (phase === 'started') sawReasoningDelta = false;
           continue;
         }
