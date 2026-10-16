@@ -10,6 +10,8 @@
   import CliDock from './dock/CliDock.svelte';
   import CodexCustomizePage from './cli/CodexCustomizePage.svelte';
   import AccountCard from './AccountCard.svelte';
+  import { agentPlan, loadAgentPlan } from '../lib/cliPlan.svelte.js';
+  import { fmtResetAt } from '../lib/ctxUsage.js';
   import { cliChat, cliNew, cliPick, cliDrop, cliSessions, cliActiveId, cliStatus, loadCliStatus, statusOf, cwdOf, setCliCwd,
     loadCliModels, syncSessions, codexTurns, loadCodexTurns, cliAttachTurn } from '../lib/cliChat.svelte.js';
   import { cliDock, cliDockOpen, cliDockClose, setCliDockWs } from '../lib/cliDock.svelte.js';
@@ -42,7 +44,13 @@
   //   medium 700–1099：侧栏可点汉堡常驻；工作台一开自动让位、关掉回来（makeSideYield）
   //   compact <700：侧栏=抽屉（ui.drawerOpen 全局开关，与 Claude 页同一颗）
   const wide = $derived(layout.expanded);          // 侧栏【恒】常驻
-  const sideMode = $derived(layout.side);          // 工作台走侧列（而非底部 sheet）
+  // P5 用量可视化：plan 常驻侧栏（原来只在账户菜单里点开才看得到）。
+  // 数据走共享的 agentPlan（UserMenu 同源）；进页拉一次，P4 的额度事件会实时刷新。
+  const plan = $derived(agentPlan.codex);
+  const planPct = $derived(plan?.primary?.usedPercent ?? null);
+  // codex 的 resetsAt 是秒级 epoch，fmtResetAt 吃毫秒（UserMenu 同款换算）。
+  const planReset = $derived(plan?.primary?.resetsAt ? fmtResetAt(plan.primary.resetsAt > 1e12 ? plan.primary.resetsAt : plan.primary.resetsAt * 1000) : '');
+  $effect(() => { loadAgentPlan('codex'); });
   const PIN_LS = 'bridge-codex-sidepin';
   let sidePinned = $state((() => { try { return localStorage.getItem(PIN_LS) === '1'; } catch { return false; } })());
   const setPinned = (v) => { sidePinned = v; try { localStorage.setItem(PIN_LS, v ? '1' : '0'); } catch {} };
@@ -259,6 +267,16 @@
   </div>
 
   <div class="d-spacer"></div>
+  <!-- P5：coding plan 常驻（planType + 用量% + 条；没登录/API-key 模式时 plan=null，整行隐藏）。 -->
+  {#if plan}
+    <div class="d-plan" title={planReset}>
+      <div class="d-plan-t">
+        <span class="d-plan-k">{plan.planType || t('Coding Plan')}</span>
+        <span class="d-plan-v">{planPct != null ? Math.round(planPct) + '%' : ''}</span>
+      </div>
+      {#if planPct != null}<div class="d-plan-bar"><span style="width:{Math.min(100, planPct)}%"></span></div>{/if}
+    </div>
+  {/if}
   <div class="d-foot"><AccountCard agent="codex" onpick={closeDrawer} onhome={single ? null : () => { closeDrawer(); exit(); }} /></div>
 {/snippet}
 
@@ -369,4 +387,11 @@
   .d-bub .pj { font-size: 18px; color: var(--serif, currentColor); font-family: var(--icons, inherit); line-height: 1; }
   .d-spacer { flex: 1; min-height: 12px; }
   .d-foot { flex: none; padding-top: 6px; }
+  /* P5：侧栏底部常驻的 coding plan（UserMenu 里那行额度摘要的常驻版）：名字 + 用量% + 4px 条。 */
+  .d-plan { flex: none; padding: 6px 10px 8px; }
+  .d-plan-t { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .d-plan-k { font-size: 12px; line-height: 16px; opacity: .6; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .d-plan-v { flex: none; font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
+  .d-plan-bar { margin-top: 4px; height: 4px; border-radius: 999px; background: color-mix(in srgb, currentColor 15%, transparent); overflow: hidden; }
+  .d-plan-bar span { display: block; height: 100%; border-radius: 999px; background: currentColor; transition: width .2s ease; }
 </style>
