@@ -12,6 +12,7 @@ export default {
   '关闭侧栏': 'Close sidebar',
   '主页': 'Home',
   '新会话': 'New session',
+  '已在隔离副本里开新会话': 'Started a new session in an isolated copy',
   '接入设置': 'Setup',
   '会话': 'Session',
   '工作目录': 'Workspace',

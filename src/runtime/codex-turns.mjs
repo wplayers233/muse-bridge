@@ -134,7 +134,7 @@ export function listCodexTurns(key) {
 export async function startCodexTurn({
   key, dataDir, prompt, sessionId = '', images = [], cwd = '',
   model = '', effort = '', env = process.env, keyEnv, binDir = '',
-  plan = false,
+  plan = false, worktree = null,
 }) {
   const turn = {
     agent: 'codex',
@@ -156,6 +156,9 @@ export async function startCodexTurn({
     dataDir: String(dataDir || ''),
     useAppServer: false,
   };
+  // worktree 会话：这一轮跑在 worktree 里——事件进缓冲（attach 时重放，前端据此亮只读指示；
+  // 重连重放也带它，幂等）。created=true = 本轮刚切出来的，前端据此给一句提示。
+  if (worktree) turn.events.push({ type: 'worktree', worktree });
 
   // 同会话重发：Claude 的语义——新的一轮顶掉旧的。先停旧的再开新的。
   let r = tryStartGen(key, turn, { maxPerKey: CODEX_MAX_TURNS, singleSession: true });

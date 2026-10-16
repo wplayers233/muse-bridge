@@ -12,6 +12,7 @@
   //
   // 状态在 lib/cliChat.svelte.js（模块级，退回主页再进来不丢；会话列表也在那儿）。
   import { cliChat, cliSend, cliStop, cliNew, cliStatus, loadCliStatus, statusOf, answerApproval, cwdOf } from '../../lib/cliChat.svelte.js';
+  import { cliDock, ensureCliDockMeta } from '../../lib/cliDock.svelte.js';
   import { reviewComments, dropAllReviewComments } from '../../lib/reviewComments.svelte.js';
   import { apiUrl } from '../../lib/server.js';
   import { authHeaders } from '../../lib/api.js';
@@ -55,6 +56,22 @@
   }
 
   let draft = $state('');
+  // worktree 勾选框（P3，照 Claude 侧 WorkspaceChips 的两态）：
+  //   新对话 + 服务端说这里能开 worktree 会话（dock meta 的 wtNew：git 主检出、非快照）→ 开关，可点；
+  //   会话已开 → 只读指示：勾着 = 这条会话跑在 worktree 里（worktree 事件带回）。
+  // 勾选状态记在 localStorage（按 agent 分开），下次新对话还是勾着（同 Claude 侧 prefs.worktree）。
+  const wtKey = 'bridge-cli-worktree-' + agent;
+  function loadWtPref() { try { return localStorage.getItem(wtKey) === '1'; } catch { return false; } }
+  let worktreeOn = $state(loadWtPref());
+  function toggleWorktree() {
+    worktreeOn = !worktreeOn;
+    try { localStorage.setItem(wtKey, worktreeOn ? '1' : '0'); } catch {}
+  }
+  const wtMeta = $derived(cliDock[agent]?.meta);
+  const wtArmable = $derived(!chat.sessionId && !!wtMeta?.wtNew);
+  const wtInSession = $derived(!!chat.sessionId && !!chat.worktree);
+  // dock meta 只在工作台展开时才拉；输入栏的勾选框也要它（wtNew），这里顺手拉一次（同缓存，不多打一遍）。
+  $effect(() => { const w = cwdOf(agent); if (w) ensureCliDockMeta(agent, w); });
   // 有待发送的行内评论时，正文为空也能发（发送按钮与 send() 的门禁共用这一个）。
   const hasPendingComments = $derived((reviewComments.byWs[cwdOf(agent)] || []).length > 0);
   let feedEl = $state(null);
@@ -80,7 +97,7 @@
     if ((!text && !hasPendingComments) || chat.busy || !ready) return;
     const imgs = agent === 'codex' ? atts : [];
     draft = ''; atts = []; mOpen = false; mItems = [];
-    cliSend(agent, text, imgs, { plan: agent === 'codex' && planMode });
+    cliSend(agent, text, imgs, { plan: agent === 'codex' && planMode, worktree: worktreeOn });
   }
   function onKey(e) {
     // @ 提及菜单优先（开着时方向键/回车都在菜单里），其次 / 命令菜单
@@ -461,6 +478,18 @@
             <input type="file" bind:this={fileEl} multiple hidden onchange={onPick} />
           {/if}
           <span class="bspacer"></span>
+          {#if wtArmable}
+            <button class="wt-toggle" role="checkbox" aria-checked={worktreeOn}
+              title={t('在仓库的隔离副本里工作')} onclick={toggleWorktree} disabled={!ready}>
+              <span class="wt-box" class:off={!worktreeOn}>{#if worktreeOn}✓{/if}</span>
+              <span>worktree</span>
+            </button>
+          {:else if wtInSession}
+            <span class="wt-toggle ro" title={t('此工作空间是 git worktree，不是主检出')}>
+              <span class="wt-box">✓</span>
+              <span>worktree</span>
+            </span>
+          {/if}
           {#if agent === 'codex'}
             <!-- 计划模式开关（仅 Codex）：打开后这一条只出计划、不改文件。
                  关掉再发就是普通模式（按计划执行时关掉它就行）。 -->
@@ -624,6 +653,13 @@
   .plan-toggle.on { background: color-mix(in srgb, var(--agent-accent, currentColor) 18%, transparent);
     border-color: color-mix(in srgb, var(--agent-accent, currentColor) 45%, transparent); font-weight: 600; }
   .plan-toggle:disabled { opacity: .35; }
+  /* worktree 勾选框（P3，照 WorkspaceChips：小方框 + worktree 字样；会话中是只读指示）。 */
+  .wt-toggle { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 9px; border-radius: 999px; white-space: nowrap; color: inherit; }
+  .wt-toggle:active { background: var(--hover); }
+  .wt-toggle:disabled { opacity: .35; }
+  .wt-toggle.ro { cursor: default; }
+  .wt-box { width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid currentColor; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; }
+  .wt-box.off { opacity: .45; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .5; }
   .caret-d { font-size: 10px; }
   .thinking { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--faint, #8a8a86); }

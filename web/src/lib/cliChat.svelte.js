@@ -9,6 +9,7 @@ import { apiUrl } from './server.js';
 import { authHeaders } from './api.js';
 import { pump } from './sse.js';
 import { noteApiFailure } from './feedback.svelte.js';
+import { showToast } from './toast.svelte.js';
 import { t } from './i18n.js';
 import { loadAgentPlan } from './cliPlan.svelte.js';
 import { emitAgentFs } from './uiReport.js';
@@ -23,6 +24,7 @@ const blank = (agent) => ({
   busy: false,
   error: '',
   cwd: '',          // 服务端这一轮用的工作目录（meta 事件带回）
+  worktree: null,   // 这一轮跑在哪个 worktree 里（worktree 事件带回；null = 不在 worktree 里）
   turnId: '',       // codex 后台轮次的 id（meta 事件带回；断线重连 / 显式停止用）
   seq: 0,
 });
@@ -243,7 +245,7 @@ export function cliNew(agent) {
   snapshot(agent);
   activeId[agent] = newId();
   const c = cliChat[agent];
-  c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.turnId = ''; c.seq = 0; c.title = '';
+  c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.worktree = null; c.turnId = ''; c.seq = 0; c.title = '';
   persist();
 }
 
@@ -290,7 +292,7 @@ export function cliDrop(agent, id) {
   if (activeId[agent] === id) {
     activeId[agent] = newId();
     const c = cliChat[agent];
-    c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.seq = 0;
+    c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.worktree = null; c.seq = 0;
   }
   persist();
   deleteRemote(agent, id);   // 服务端那条也删掉（幂等；失败时下次 sync 会带回来，再删一次即可）
@@ -349,7 +351,7 @@ export async function cliAttachTurn(agent, turnId) {
   snapshot(agent);
   activeId[agent] = 'turn-' + turnId;
   const c = cliChat[agent];
-  c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.turnId = turnId; c.seq = 0;
+  c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.worktree = null; c.turnId = turnId; c.seq = 0;
   c.busy = true;
   const itemId = ++c.seq;
   c.items.push({ role: 'agent', id: itemId, text: '', reasoning: '', tools: [], todos: [], notes: [], approvals: [], error: '', auth: false, status: 'running', usage: null });
@@ -428,6 +430,13 @@ function applyEvent(agent, itemId, ev) {
       break;
     }
     case 'start': if (ev.sessionId) c.sessionId = ev.sessionId; break;
+    // worktree：这一轮跑在哪个 worktree 里（后端每轮都带，幂等）。
+    // created=true = 本轮刚切出来的——给一句提示，顺带让工作台切过去（dock 的 ws 跟着 c.cwd 走）。
+    case 'worktree': {
+      c.worktree = ev.worktree || null;
+      if (ev.worktree && ev.worktree.created) showToast(t('已在隔离副本里开新会话'));
+      break;
+    }
     case 'session': if (ev.sessionId) c.sessionId = ev.sessionId; break;
     case 'text': m.text += String(ev.text || ''); break;
     case 'reasoning': m.reasoning += (m.reasoning ? '\n\n' : '') + String(ev.text || ''); break;
@@ -543,11 +552,15 @@ export async function cliSend(agent, prompt, images = [], opts = {}) {
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       // 图片走 base64 裸数据（不含 dataURL 前缀）；服务端落盘后交官方 -i 参数（仅 codex）。
       // plan：Codex 计划模式开关（单条消息生效；zcode 没有这个参数，不发）。
+      // cwd：会话的工作目录（worktree 会话续聊时带上，快照里存的那份；新会话不带，走服务端 prefs）。
+      // worktree：新会话且勾了 worktree 勾选框时才带（后端只对无 sessionId 的请求建 worktree）。
       body: JSON.stringify({
         prompt: text,
         sessionId: c.sessionId || undefined,
+        cwd: c.cwd || undefined,
         images: imgs ? images.map((a) => ({ name: a.name, data: String(a.dataUrl || '').split(',')[1] || '' })) : undefined,
         ...(opts.plan === true ? { plan: true } : {}),
+        ...(opts.worktree === true && !c.sessionId ? { worktree: true } : {}),
       }),
       credentials: 'same-origin',
       signal: ac.signal,

@@ -147,6 +147,39 @@ test('attach 重放：跑完的 turn 能整轮重放', async (t) => {
   assert.match(texts, /第二段/);
 });
 
+test('worktree：带 worktree 参数开轮，worktree 事件进缓冲、attach 重放时在 meta 之后', async (t) => {
+  const { turn } = await startTurn(t);
+  // startTurn 没传 worktree：缓冲里不应有 worktree 事件
+  assert.equal(turn.events.some((e) => e.type === 'worktree'), false);
+  // 直接再开一轮（同一 key 会顶掉旧的，不用等旧的跑完）：带 worktree 参数
+  const e = makeEnv();
+  const k = 'codex:test-wt-' + (++keySeq) + '-' + Date.now().toString(36);
+  const wt = { name: 'calm-otter-a1b2c3', cwd: '/tmp/wt-demo', detached: true, branch: 'abc1234', created: true };
+  const r = await startCodexTurn({
+    key: k, dataDir: '', prompt: '测试问题', sessionId: '',
+    env: e.env, keyEnv: {}, binDir: e.binDir, worktree: wt,
+  });
+  assert.equal(r.ok, true, '开轮应该成功');
+  const turn2 = r.turn;
+  t.after(async () => {
+    try { stopCodexTurn(k, turn2.turnId); } catch {}
+    await new Promise((r2) => setTimeout(r2, 300));
+    rmSync(e.tmp, { recursive: true, force: true });
+  });
+  // 事件进缓冲是同步的（创建时 push），不用等轮次跑完
+  assert.deepEqual(turn2.events[0], { type: 'worktree', worktree: wt });
+  // attach 重放：meta 之后就是 worktree 事件
+  const res = fakeRes();
+  const attached = attachCodexTurn(turn2, res);
+  await waitFor(() => sseEvents(res).some((e) => e.type === 'worktree'), 8000, 'worktree 事件重放');
+  res.emit('close');
+  await attached;
+  const evs = sseEvents(res);
+  assert.equal(evs[0].type, 'meta');
+  assert.equal(evs[1].type, 'worktree');
+  assert.deepEqual(evs[1].worktree, wt);
+});
+
 test('计划模式 + 老版本回落：先给提示，这一轮按普通模式跑', async (t) => {
   // 桩的 app-server 探测故意非零 → 走 exec 回落（老版本没 collaborationMode），
   // 计划开关不能静默当普通轮跑：先给一句提示，再按普通模式跑完。

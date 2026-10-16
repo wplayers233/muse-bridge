@@ -46,6 +46,7 @@ import { codexSkills } from '../runtime/agent-skills-codex.mjs';
 import { readInstalledPlugins, scanCatalog, codexMcpList, codexPluginAdd, codexPluginRemove } from '../runtime/agent-plugins-codex.mjs';
 import { codexPlan } from '../runtime/agent-plan-codex.mjs';
 import { zcodePlan } from '../runtime/agent-plan-zcode.mjs';
+import { createSessionWorktree, worktreeInfo } from '../cli-worktrees.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -112,7 +113,7 @@ const sseSend = (res, ev) => { try { res.write('data: ' + JSON.stringify(ev) + '
 // 跟原来（zcode 现在还是）的区别只有一点：这一轮的生命周期跟 HTTP 请求解绑。
 // res 断开只退订，不断进程；turn 在后台继续跑，回来调 /api/codex/turns/attach 接上。
 // 选路（app-server / exec 回落）、审批等待、事件缓冲全在 runtime/codex-turns.mjs 里。
-async function codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan }) {
+async function codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan, worktree }) {
   // env/keyEnv：每身份注入——user 用自己的 key（<dataDir>/agents）+ 自己的 CLI 数据目录
   // （CODEX_HOME，见 runtime/agent-keys.mjs）；admin 不设目录 = 继承宿主。
   const spawnEnv = { ...process.env, ...cliDataEnv(ctx) };
@@ -120,6 +121,7 @@ async function codexChatHandler(req, res, ctx, { prompt, sessionId, images, pref
   const r = await startCodexTurn({
     key: codexCallerKey(ctx), dataDir: ctx.dataDir, prompt, sessionId, images, cwd,
     model: prefs.model, effort: prefs.effort, env: spawnEnv, keyEnv, plan: plan === true,
+    worktree: worktree || null,
   });
   if (!r.ok) return json(res, 409, { error: r.error });
   // 挂上 SSE：先 replay 已缓冲的，再转实时。断开只退订（attachCodexTurn 内部处理），
@@ -214,7 +216,28 @@ export function registerAgentCliRoutes(router, { identify }) {
       // 可在分页的「工作目录」里换；见 runtime/cli-cwd.mjs）。
       // model / effort：codex 的模型与思考深度（分页的选择器里选的；zcode 没有这两个参数）。
       const prefs = getCliPrefs(ctx, agent);
-      const cwd = prefs.cwd;
+      let cwd = prefs.cwd;
+      // 会话级 cwd 覆盖：worktree 会话续聊时，前端把会话的 cwd 随消息带上（快照里存的那份）。
+      // 过 authorizeProjectPath 同一道门禁（与 POST /api/<agent>/cwd 同款），不放宽能选的范围。
+      if (body.cwd) {
+        try { cwd = authorizeProjectPath(ctx, body.cwd); }
+        catch (e) { return json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) }); }
+      }
+      // worktree（P3）：只对新会话生效（无 sessionId）。在已授权的工作目录上切一个
+      // detached HEAD worktree，这一轮就在里面跑；切失败直接报错，不静默跑在主检出里。
+      // 续聊（有 sessionId）不新建：会话的 worktree 由上面那层 body.cwd 带进来。
+      let worktree = null;
+      if (body.worktree === true && !sessionId) {
+        try {
+          const entry = await createSessionWorktree({ storeFile: path.join(ctx.dataDir || '.', `${agent}-worktrees.json`), namespace: agent, dir: cwd });
+          cwd = entry.cwd;
+          worktree = { ...entry, created: true };
+        } catch (e) { return json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) }); }
+      } else {
+        // 这一轮的 cwd 是不是 linked worktree：前端据此亮只读指示（工作台也跟着切过去）。
+        // 每轮都验一遍（工作目录可能在消息之间被换过），git 调用很快，本地仓库可忽略。
+        try { worktree = await worktreeInfo(cwd); } catch { worktree = null; }
+      }
       // 图片附件：codex 官方能力（exec 路 -i / app-server 路 localImage，见 runtime/agent-appserver.mjs）。
       let images = [];
       if (Array.isArray(body.images) && body.images.length) {
@@ -228,7 +251,7 @@ export function registerAgentCliRoutes(router, { identify }) {
       if (agent === 'codex') {
         // 计划模式是单条消息的开关（前端输入框的「计划模式」胶囊），不进 prefs 存量：
         // 只给这一条用，下一条默认回普通模式。
-        return codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan: body.plan === true });
+        return codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan: body.plan === true, worktree });
       }
       const ac = new AbortController();
       let gone = false;
@@ -240,6 +263,7 @@ export function registerAgentCliRoutes(router, { identify }) {
 
       sseOpen(res);
       sseSend(res, { type: 'meta', agent, cwd, sessionId });
+      if (worktree) sseSend(res, { type: 'worktree', worktree });
       try {
         // env/keyEnv：每身份注入——user 用自己的 key（<dataDir>/agents）+ 自己的 CLI 数据目录
         // （CODEX_HOME / ZCODE_DATA_BASE_DIR，见 runtime/agent-keys.mjs）；admin 不设目录 = 继承宿主。

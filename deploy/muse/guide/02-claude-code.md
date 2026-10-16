@@ -143,8 +143,11 @@ Claude Code 是 Anthropic 的编程 / 通用 agent，在这台 VM 上替用户�
 ## worktree（在仓库的隔离副本里工作）
 
 - 只在**git 仓库项目的新对话**里出现：输入框上方的分支芯片右半边有个 worktree 小方框。勾上再发第一条消息，Claude 会从当前分支复制出一份独立的副本（在项目的 `.claude/worktrees/` 下，新建一个 `claude/` 开头的分支），整段对话都在副本里改，原来的文件一点不动。适合同一个项目同时开几个对话各改各的。
+- Codex / ZCode 也有同样的 worktree 勾选框（输入栏控制条里，计划模式开关旁边；只在 git 仓库的新对话里出现）。勾上开新对话时，在 `.codex/worktrees/`（ZCode 是 `.zcode/worktrees/`）下切一个 detached HEAD（不建分支）的隔离副本，整段对话在里面跑。工作台（审阅、文件、终端）会跟着指向这份副本；对话开始后勾选框变成只读指示，告诉你这条会话在 worktree 里。
+- 仓库根有 `.worktreeinclude` 时，被 git 忽略、又命中这份清单的本地文件（比如 `.env`）会拷进新 worktree。
 - 勾选会被记住，下次新对话还是勾着。对话开始后工作台的终端、审阅、文件都指向这份副本；这个对话仍然列在原项目下面。
 - 仓库还没有任何提交时建不了 worktree。
+- 暂不支持：把改动从 worktree 搬回主检出（Handoff）、在 worktree 里建分支（Create branch here）、永久 worktree。
 
 ## 引用另一个对话
 
