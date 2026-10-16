@@ -355,7 +355,8 @@ function probeOnce(bin, env) {
       }
     });
     try {
-      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'muse-bridge', title: 'Muse Bridge', version: '1.0.0' } } }) + '\n');
+      // 探测也带上 capabilities，与正式握手一致（只判回包有无 result，不影响判定）。
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'muse-bridge', title: 'Muse Bridge', version: '1.0.0' }, capabilities: { experimentalApi: true } } }) + '\n');
     } catch { finish(false); }
   });
 }
@@ -438,7 +439,10 @@ export async function* runAppServerTurn(agent, o = {}) {
   const outBuf = new Map();      // itemId -> 累积的命令输出
 
   try {
-    const init = await rpc.call('initialize', { clientInfo: { name: 'muse-bridge', title: 'Muse Bridge', version: '1.0.0' } }, 15_000);
+    // 声明实验性 API 能力：不声明时，turn/start 带 collaborationMode（计划模式）会被上游
+    // 直接拒掉（-32600 turn/start.collaborationMode requires experimentalApi capability）。
+    // 打开后可能多收实验性字段/事件，不认识的方法名按现有兜底忽略，不污染正常流程。
+    const init = await rpc.call('initialize', { clientInfo: { name: 'muse-bridge', title: 'Muse Bridge', version: '1.0.0' }, capabilities: { experimentalApi: true } }, 15_000);
     if (!init || !init.result) { yield { type: 'error', message: 'app-server 握手失败' + (logs.length ? '：' + logs[logs.length - 1] : '') }; return; }
     rpc.notify('initialized', {});
 
