@@ -455,6 +455,12 @@ export async function* runAppServerTurn(agent, o = {}) {
     // 模型 / 思考深度：只有显式选了才覆盖（空 = 用 CLI 自己的 config.toml）。
     if (model) turnParams.model = model;
     if (effort) turnParams.effort = effort;
+    // 思考摘要：不显式要，上游默认一条都不发（实测不传 = reasoning 事件 0 条），于是下面那些
+    // item/reasoning/* 的处理分支永远等不到东西——界面上的「思考」是空的。官方 schema 的
+    // TurnStartParams.summary 正是这个开关（auto | concise | detailed | none，说明是
+    // 「Override the reasoning summary for this turn and subsequent turns」）。老版本不认这个
+    // 字段也不要紧：实测 app-server 忽略不认识的参数，不报错。
+    turnParams.summary = 'detailed';
     const started = await rpc.call('turn/start', turnParams, 30_000);
     if (!started || started.error) { yield { type: 'error', message: '这一轮没发出去：' + JSON.stringify((started && started.error) || '') }; return; }
 
