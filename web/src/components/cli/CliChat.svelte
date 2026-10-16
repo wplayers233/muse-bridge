@@ -12,6 +12,7 @@
   //
   // 状态在 lib/cliChat.svelte.js（模块级，退回主页再进来不丢；会话列表也在那儿）。
   import { cliChat, cliSend, cliStop, cliNew, cliStatus, loadCliStatus, statusOf, answerApproval, cwdOf } from '../../lib/cliChat.svelte.js';
+  import { reviewComments, dropAllReviewComments } from '../../lib/reviewComments.svelte.js';
   import { apiUrl } from '../../lib/server.js';
   import { authHeaders } from '../../lib/api.js';
   import { renderMarkdown } from '../../lib/md.js';
@@ -437,6 +438,12 @@
         </div>
       {/if}
       <div class="box">
+        {#if (reviewComments.byWs[cwdOf(agent)] || []).length}
+          <div class="rv-pending">
+            <span>{t('审阅面板行内评论 {n} 条，将随下一条消息发给模型', { n: (reviewComments.byWs[cwdOf(agent)] || []).length })}</span>
+            <button onclick={() => dropAllReviewComments(cwdOf(agent))}>{t('不带了')}</button>
+          </div>
+        {/if}
         <textarea class="ta" bind:this={taEl} bind:value={draft} {placeholder} rows="1" use:autoGrow
           oninput={onInput} onpaste={onPaste} onkeydown={onKey} disabled={!ready}></textarea>
         <div class="bar">
@@ -635,6 +642,9 @@
   .ta::placeholder { color: var(--faint, #8a8a86); }
   .box:focus-within { border-color: color-mix(in srgb, var(--agent-accent, currentColor) 45%, transparent); }
   .box:has(.ta:disabled) { opacity: .5; }
+  /* 审阅行内评论待发送提示（审阅面板写了评论，下一条消息会带上；点「不带了」丢掉） */
+  .rv-pending { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--coral); padding: 8px 8px 2px; }
+  .rv-pending button { color: var(--muted); text-decoration: underline; }
   /* 控制条：左 +/工作目录、右模型胶囊 + 圆形发送钮（官方 PC 端同构，条高 44px） */
   .bar { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 6px 2px 6px; }
   .bspacer { flex: 1; }

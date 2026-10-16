@@ -1,67 +1,210 @@
 <script>
-  // 审阅面板：工作空间 worktree 概览（基线 → working tree 的变更清单），
-  // 行点开懒加载单文件 unified diff（+绿 −红），Claude 分页配色。
+  // 审阅面板：工作空间变更清单 + 单文件 diff 展开（+绿 −红），三家共用（Claude / Codex / ZCode）。
+  //
+  // 范围（官方 PC 端五种；Last turn 不走后端，P1 从聊天快照的 m.diff 喂）：
+  //   未暂存 unstaged（工作区 vs 暂存区 + 未跟踪）/ 已暂存 staged（暂存区 vs HEAD）/
+  //   提交 commit（某提交 vs 其父）/ 分支 branch（工作区 vs 基线）/ 上一轮 lastturn
+  //
+  // Git 操作（三级 stage / unstage / revert，走 POST /api/claude/review/git）：
+  //   整 diff / 单文件 / 单 hunk。hunk 用 git apply --cached/--reverse 落盘，
+  //   先 --check 再 apply，过期 hunk 会 409。还原是破坏性操作，按钮要点两次确认。
+  //   提交范围只读（历史 diff，没有可 stage 的东西）；分支范围的还原回到基线。
+  //
+  // 行内评论：悬停某行点 + 写反馈，存进 reviewComments（按 ws 分桶）；下一条聊天消息
+  // 发送时由 cliSend 取走、拼成指令块注入给模型。评论只活在内存里，刷新页面丢掉
+  // （diff 一变行号就可能对不上，持久化反而会带过期锚点）。
   import { api } from '../../lib/api.js';
   import { dock } from '../../lib/dock.svelte.js';
   import { t, tc, tr } from '../../lib/i18n.js';
+  import { showToast } from '../../lib/toast.svelte.js';
+  import { reviewComments, addReviewComment, dropReviewComment, dropAllReviewComments, reviewCommentCount } from '../../lib/reviewComments.svelte.js';
   let { dockState = dock } = $props();
 
   let loading = $state(true);
   let err = $state('');
-  let data = $state(null);          // { git, branch, base, files:[{path,from,add,del,bin,st}], total, truncated }
-  let open = $state({});            // path -> { loading, text, bin, truncated, err }
+  let data = $state(null);          // { git, branch, base, scope, sha, subject, files:[{path,from,add,del,bin,st}], total, truncated }
+  let open = $state({});            // path -> { loading, text, bin, truncated, err, parsed }
+  let scope = $state('branch');
+  let sha = $state('');
+  let baseBranch = $state('');
+  let commits = $state(null);
+  let branches = $state(null);
+  let confirmKey = $state('');
+  let busyKey = $state('');
+  let commenting = $state(null);    // { file, side, no, lineText }
+  let commentDraft = $state('');
 
   const enc = encodeURIComponent;
+  const ws = $derived(dockState.ws || '');
+  const pendingCount = $derived(reviewCommentCount(ws));
+
+  // ── unified diff 解析：文件头 + hunks，每行带新/旧文件行号（行内评论的锚点） ──
+  function parseDiff(text) {
+    const lines = String(text || '').split('\n');
+    while (lines.length && lines[lines.length - 1] === '') lines.pop();
+    const header = [];
+    const hunks = [];
+    let cur = null;
+    let newNo = 0, oldNo = 0;
+    for (const l of lines) {
+      if (l.startsWith('@@')) {
+        const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(l);
+        oldNo = m ? +m[1] : 0;
+        newNo = m ? +m[3] : 0;
+        cur = { header: l, lines: [] };
+        hunks.push(cur);
+        continue;
+      }
+      if (!cur) { header.push(l); continue; }
+      if (l.startsWith('+')) cur.lines.push({ cls: 'add', text: l, newNo: newNo++, oldNo: null });
+      else if (l.startsWith('-')) cur.lines.push({ cls: 'del', text: l, oldNo: oldNo++, newNo: null });
+      else if (l.startsWith('\\')) cur.lines.push({ cls: 'meta', text: l, newNo: null, oldNo: null });
+      else cur.lines.push({ cls: 'ctx', text: l, newNo: newNo++, oldNo: oldNo++ });
+    }
+    return { header, hunks };
+  }
+
+  function scopeQuery() {
+    if (scope === 'commit') return `&scope=commit&sha=${enc(sha)}`;
+    if (scope === 'branch' && baseBranch) return `&scope=branch&base=${enc(baseBranch)}`;
+    if (scope === 'lastturn') return '&scope=lastturn';
+    return `&scope=${scope}`;
+  }
 
   async function refresh() {
     loading = true; err = '';
     try {
-      data = await api.get(`/api/claude/review?ws=${enc(dockState.ws)}`);
-      open = {};
+      if (scope === 'lastturn') { data = { git: true, scope: 'lastturn', files: [], total: { add: 0, del: 0 }, truncated: false, branch: '', base: '' }; open = {}; }
+      else {
+        data = await api.get(`/api/claude/review?ws=${enc(ws)}${scopeQuery()}`);
+        open = {};
+      }
     } catch (e) { err = tr(e?.body?.error || e?.body) || t('加载失败'); data = null; }
     loading = false;
   }
-  $effect(() => { if (dockState.ws) refresh(); });
+  $effect(() => { if (ws) refresh(); });
+
+  async function loadCommits() {
+    if (commits) return;
+    try { const d = await api.get(`/api/claude/review/commits?ws=${enc(ws)}`); commits = d.commits || []; }
+    catch { commits = []; }
+  }
+  async function loadBranches() {
+    if (branches) return;
+    try { const d = await api.get(`/api/claude/review/branches?ws=${enc(ws)}`); branches = d.branches || []; }
+    catch { branches = []; }
+  }
+  function setScope(s) {
+    scope = s; confirmKey = ''; commenting = null;
+    if (s === 'commit') loadCommits();
+    if (s === 'branch') loadBranches();
+    refresh();
+  }
+  function pickCommit(v) { sha = v; refresh(); }
+  function pickBase(v) { baseBranch = v; refresh(); }
 
   async function toggle(f) {
     if (open[f.path]) { const { [f.path]: _, ...rest } = open; open = rest; return; }
     open = { ...open, [f.path]: { loading: true } };
     try {
       // 注意别用 st= 传状态——st/ct 是身份系统保留参数（share/snap token），会被识别成假身份 401。
-      const q = `ws=${enc(dockState.ws)}&file=${enc(f.path)}${f.st === 'U' ? '&u=1' : ''}${f.from ? `&from=${enc(f.from)}` : ''}`;
+      const q = `ws=${enc(ws)}&file=${enc(f.path)}${f.st === 'U' ? '&u=1' : ''}${f.from ? `&from=${enc(f.from)}` : ''}${scopeQuery()}`;
       const d = await api.get(`/api/claude/review/diff?${q}`);
-      open = { ...open, [f.path]: { loading: false, text: d.text || '', bin: !!d.bin, truncated: !!d.truncated } };
+      open = { ...open, [f.path]: { loading: false, text: d.text || '', bin: !!d.bin, truncated: !!d.truncated, parsed: parseDiff(d.text || '') } };
     } catch (e) {
       open = { ...open, [f.path]: { loading: false, err: tr(e?.body?.error) || t('加载失败') } };
     }
   }
 
-  // unified diff → 渲染行分类（hunk 头 / + / − / 上下文；文件头 diff/index/---/+++ 淡化）。
-  function diffLines(text) {
-    const out = [];
-    for (const l of String(text || '').split('\n')) {
-      let cls = 'ctx';
-      if (l.startsWith('@@')) cls = 'hunk';
-      else if (l.startsWith('+++') || l.startsWith('---') || l.startsWith('diff ') || l.startsWith('index ') || l.startsWith('new file') || l.startsWith('deleted file') || l.startsWith('rename ') || l.startsWith('similarity ') || l.startsWith('Binary files')) cls = 'meta';
-      else if (l.startsWith('+')) cls = 'add';
-      else if (l.startsWith('-')) cls = 'del';
-      else if (l.startsWith('\\')) cls = 'meta';
-      out.push({ cls, l });
+  // ── Git 操作：op=stage|unstage|revert，level=all|file|hunk ──
+  // 还原要点两次确认（第一次只武装按钮，第二次才执行）；hunk 的 patch = 文件头 + 该 hunk。
+  async function gitOp(op, level, file = '', patch = '') {
+    const key = `${op}:${level}:${file}:${patch ? 'h' : ''}`;
+    if (op === 'revert' && confirmKey !== key) { confirmKey = key; setTimeout(() => { if (confirmKey === key) confirmKey = ''; }, 4000); return; }
+    confirmKey = '';
+    if (busyKey) return;
+    busyKey = key;
+    try {
+      await api.post('/api/claude/review/git', {
+        ws, op, level, file, patch,
+        ...(scope === 'branch' && baseBranch ? { base: baseBranch } : {}),
+      });
+      showToast(op === 'revert' ? t('已还原') : t('已执行'));
+      await refresh();
+    } catch (e) {
+      showToast(tr(e?.body?.error) || t('操作失败'), 'err');
     }
-    while (out.length && out[out.length - 1].l === '') out.pop();
-    return out;
+    busyKey = '';
   }
+  function hunkPatch(parsed, hunk) {
+    return [...parsed.header, hunk.header, ...hunk.lines.map((l) => l.text)].join('\n') + '\n';
+  }
+  // 各范围下哪些操作有意义（提交是历史，只读；分支的还原回到基线）：
+  const canStage = $derived(scope === 'unstaged');
+  const canUnstage = $derived(scope === 'staged');
+  const canRevert = $derived(scope === 'unstaged' || scope === 'staged' || scope === 'branch');
+
+  // ── 行内评论 ──
+  function startComment(file, line) {
+    // + 行锚到新文件行号，− 行锚到旧文件行号，上下文行锚到新文件行号。
+    const side = line.cls === 'del' ? 'old' : 'new';
+    const no = side === 'old' ? line.oldNo : line.newNo;
+    if (!no) return;
+    commenting = { file, side, no, lineText: line.text };
+    commentDraft = '';
+  }
+  function submitComment() {
+    if (!commenting || !commentDraft.trim()) return;
+    addReviewComment(ws, { ...commenting, text: commentDraft });
+    commenting = null; commentDraft = '';
+    showToast(t('评论已记下，随下一条消息发给模型'));
+  }
+  const commentsFor = (file, side, no) => (reviewComments.byWs[ws] || []).filter((c) => c.file === file && c.side === side && c.no === no);
 
   const stLabel = { A: tc('diff', '新增'), D: tc('diff', '删除'), R: tc('diff', '改名'), U: tc('diff', '未跟踪'), C: tc('diff', '复制') };
+  const SCOPE_LABEL = { unstaged: t('未暂存'), staged: t('已暂存'), commit: t('提交'), branch: t('分支'), lastturn: t('上一轮') };
 </script>
 
 <div class="rv">
+  <div class="rv-scopes">
+    {#each ['unstaged', 'staged', 'commit', 'branch', 'lastturn'] as s}
+      <button class="rv-scope" class:on={scope === s} onclick={() => setScope(s)}>{SCOPE_LABEL[s]}</button>
+    {/each}
+  </div>
+  {#if scope === 'commit'}
+    <div class="rv-pick">
+      <select value={sha} onchange={(e) => pickCommit(e.target.value)}>
+        <option value="">{t('选择一个提交…')}</option>
+        {#each (commits || []) as c}
+          <option value={c.sha}>{c.short} {c.subject}</option>
+        {/each}
+      </select>
+    </div>
+  {/if}
+  {#if scope === 'branch'}
+    <div class="rv-pick">
+      <select value={baseBranch} onchange={(e) => pickBase(e.target.value)}>
+        <option value="">{t('自动基线（main / master）')}</option>
+        {#each (branches || []) as b}
+          <option value={b.name}>{b.name}{b.current ? t('（当前）') : ''}</option>
+        {/each}
+      </select>
+    </div>
+  {/if}
+  {#if pendingCount}
+    <div class="rv-pending">
+      <span>{t('行内评论 {n} 条，将随下一条消息发给模型', { n: pendingCount })}</span>
+      <button onclick={() => dropAllReviewComments(ws)}>{t('清空')}</button>
+    </div>
+  {/if}
   {#if loading}
     <div class="rv-empty"><span class="spin"></span>{t('正在读取变更…')}</div>
   {:else if err}
     <div class="rv-empty">{err}<button class="rv-retry" onclick={refresh}>{t('重试')}</button></div>
   {:else if !data || !data.git}
     <div class="rv-empty">{t('该工作空间不是 git 仓库')}</div>
+  {:else if scope === 'lastturn'}
+    <div class="rv-empty">{t('上一轮的改动暂未接入')}</div>
   {:else}
     <div class="rv-head">
       <span class="rv-branch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="8" r="2.6"/><path d="M6 8.6v6.8M18 10.6c0 4-5 3.4-8 5"/></svg>{data.base}</span>
@@ -69,10 +212,20 @@
       <span class="rv-wt">working tree</span>
       <button class="rv-refresh" aria-label={t('刷新')} onclick={refresh}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v5h-5"/></svg></button>
     </div>
-    {#if !data.files.length}
+    {#if scope === 'commit' && !sha}
+      <div class="rv-empty">{t('请先选择一个提交')}</div>
+    {:else if !data.files.length}
       <div class="rv-empty">{t('工作树很干净，没有改动')}</div>
     {:else}
       <div class="rv-hint">{t('大文件默认折叠，点击文件展开 diff。共 {n} 个文件', { n: data.files.length })} <em class="add">+{data.total.add}</em> <em class="del">−{data.total.del}</em>{#if data.truncated}{t('（已截断）')}{/if}</div>
+      {#if data.files.length}
+        <div class="rv-actions">
+          {#if canStage}<button class="rv-act" onclick={() => gitOp('stage', 'all')}>{t('全部暂存')}</button>{/if}
+          {#if canUnstage}<button class="rv-act" onclick={() => gitOp('unstage', 'all')}>{t('全部取消暂存')}</button>{/if}
+          {#if canRevert}<button class="rv-act danger" onclick={() => gitOp('revert', 'all')}>{confirmKey === 'revert:all::' ? t('确认还原全部？') : t('全部还原')}</button>{/if}
+          {#if scope === 'commit'}<span class="rv-ro">{t('提交是只读的')}</span>{/if}
+        </div>
+      {/if}
       <div class="rv-list">
         {#each data.files as f (f.path)}
           <div class="rv-file">
@@ -93,9 +246,49 @@
                 {:else if !open[f.path].text}
                   <div class="rv-dload">{t('（无差异内容）')}</div>
                 {:else}
+                  <div class="rv-facts">
+                    {#if canStage}<button class="rv-fact" onclick={() => gitOp('stage', 'file', f.path)}>{t('暂存文件')}</button>{/if}
+                    {#if canUnstage}<button class="rv-fact" onclick={() => gitOp('unstage', 'file', f.path)}>{t('取消暂存')}</button>{/if}
+                    {#if canRevert}<button class="rv-fact danger" onclick={() => gitOp('revert', 'file', f.path)}>{confirmKey === `revert:file:${f.path}:` ? t('确认还原？') : t('还原文件')}</button>{/if}
+                  </div>
                   <div class="rv-code">
-                    {#each diffLines(open[f.path].text) as ln}
-                      <div class="dl {ln.cls}">{ln.l || ' '}</div>
+                    {#each open[f.path].parsed.header as hl}
+                      <div class="dl meta">{hl || ' '}</div>
+                    {/each}
+                    {#each open[f.path].parsed.hunks as hunk}
+                      <div class="dl hunk">
+                        <span>{hunk.header}</span>
+                        {#if scope === 'unstaged'}
+                          <button class="rv-hact" onclick={() => gitOp('stage', 'hunk', f.path, hunkPatch(open[f.path].parsed, hunk))}>{t('暂存此块')}</button>
+                          <button class="rv-hact danger" onclick={() => gitOp('revert', 'hunk', f.path, hunkPatch(open[f.path].parsed, hunk))}>{confirmKey === `revert:hunk:${f.path}:h` ? t('确认还原？') : t('还原此块')}</button>
+                        {:else if scope === 'staged'}
+                          <button class="rv-hact" onclick={() => gitOp('unstage', 'hunk', f.path, hunkPatch(open[f.path].parsed, hunk))}>{t('取消暂存此块')}</button>
+                        {/if}
+                      </div>
+                      {#each hunk.lines as ln}
+                        <div class="dl {ln.cls}">
+                          <span class="dl-no">{ln.cls === 'del' ? (ln.oldNo ?? '') : (ln.newNo ?? '')}</span>
+                          <span class="dl-txt">{ln.text || ' '}</span>
+                          {#if ln.cls !== 'meta'}
+                            <button class="dl-plus" title={t('对此行写评论')} onclick={() => startComment(f.path, ln)}>+</button>
+                          {/if}
+                        </div>
+                        {#each commentsFor(f.path, ln.cls === 'del' ? 'old' : 'new', ln.cls === 'del' ? ln.oldNo : ln.newNo) as c}
+                          <div class="dl-cmt">
+                            <span class="dl-cmt-t">{c.text}</span>
+                            <button class="dl-cmt-x" aria-label={t('删除评论')} onclick={() => dropReviewComment(ws, c.id)}>×</button>
+                          </div>
+                        {/each}
+                        {#if commenting && commenting.file === f.path && commenting.no === (ln.cls === 'del' ? ln.oldNo : ln.newNo) && commenting.side === (ln.cls === 'del' ? 'old' : 'new')}
+                          <div class="dl-cmt-ed">
+                            <textarea rows="2" bind:value={commentDraft} placeholder={t('写下对这一行的反馈…')}></textarea>
+                            <div class="dl-cmt-btns">
+                              <button onclick={submitComment}>{t('提交评论')}</button>
+                              <button onclick={() => { commenting = null; commentDraft = ''; }}>{t('取消')}</button>
+                            </div>
+                          </div>
+                        {/if}
+                      {/each}
                     {/each}
                     {#if open[f.path].truncated}<div class="dl meta">{t('…（diff 过长，已截断）')}</div>{/if}
                   </div>
@@ -119,6 +312,15 @@
   .rv-retry { color: var(--coral); padding: 4px 10px; border-radius: 8px; }
   .rv-retry:active { background: var(--hover); }
 
+  .rv-scopes { display: flex; gap: 4px; padding: 8px 2px 4px; flex-wrap: wrap; }
+  .rv-scope { font-size: 12.5px; padding: 4px 10px; border-radius: 8px; opacity: .6; }
+  .rv-scope.on { opacity: 1; background: color-mix(in srgb, currentColor 10%, transparent); font-weight: 560; }
+  .rv-scope:active { background: var(--hover); }
+  .rv-pick { padding: 2px 2px 6px; }
+  .rv-pick select { width: 100%; font-size: 13px; padding: 6px 8px; border: 1px solid var(--divider); border-radius: 8px; background: var(--bg); color: var(--text); }
+  .rv-pending { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--coral); padding: 4px 6px 8px; }
+  .rv-pending button { color: var(--muted); text-decoration: underline; }
+
   .rv-head { display: flex; align-items: center; gap: 8px; padding: 10px 6px 4px; font-size: 14px; color: var(--text); }
   .rv-branch { display: flex; align-items: center; gap: 6px; font-weight: 560; }
   .rv-branch svg { width: 16px; height: 16px; color: var(--muted); }
@@ -132,6 +334,12 @@
   .rv-hint { color: var(--muted); font-size: 12px; padding: 2px 6px 10px; }
   .rv-hint .add { color: var(--ok); font-style: normal; }
   .rv-hint .del { color: var(--crit); font-style: normal; }
+
+  .rv-actions { display: flex; gap: 6px; padding: 0 6px 10px; flex-wrap: wrap; }
+  .rv-act, .rv-fact { font-size: 12.5px; padding: 5px 10px; border-radius: 8px; background: color-mix(in srgb, currentColor 7%, transparent); }
+  .rv-act:active, .rv-fact:active { background: var(--hover); }
+  .rv-act.danger, .rv-fact.danger, .rv-hact.danger { color: var(--crit); }
+  .rv-ro { font-size: 12px; color: var(--muted); padding: 5px 0; }
 
   .rv-list { display: flex; flex-direction: column; gap: 2px; }
   .rv-row { width: 100%; display: flex; align-items: center; gap: 7px; padding: 7px 8px; border-radius: 8px; font-size: 13.5px; color: var(--serif); text-align: left; transition: background-color .12s ease; }
@@ -152,13 +360,28 @@
 
   .rv-diff { margin: 2px 0 8px 20px; border: 1px solid var(--divider); border-radius: 10px; overflow: hidden; }
   .rv-dload { display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 13px; padding: 16px; }
+  .rv-facts { display: flex; gap: 6px; padding: 8px 10px 2px; flex-wrap: wrap; }
   .rv-code { overflow-x: auto; font-family: Consolas, 'Cascadia Mono', Menlo, monospace; font-size: 12px; line-height: 1.5; padding: 6px 0; }
-  .dl { white-space: pre; padding: 0 10px; min-width: max-content; }
+  .dl { white-space: pre; padding: 0 10px; min-width: max-content; display: flex; align-items: center; gap: 6px; }
   .dl:global(.add) { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--text); }
   .dl:global(.del) { background: color-mix(in srgb, var(--crit) 11%, transparent); color: var(--text); }
-  .dl:global(.hunk) { color: #7aa2f7; background: color-mix(in srgb, #7aa2f7 7%, transparent); padding-top: 2px; padding-bottom: 2px; }
+  .dl:global(.hunk) { color: #7aa2f7; background: color-mix(in srgb, #7aa2f7 7%, transparent); padding-top: 2px; padding-bottom: 2px; justify-content: space-between; }
   .dl:global(.meta) { color: var(--muted); }
   .dl:global(.ctx) { color: var(--serif); }
+  .dl-no { flex: none; width: 32px; text-align: right; color: var(--muted); font-size: 11px; user-select: none; }
+  .dl-txt { flex: 1; min-width: 0; }
+  .dl-plus { flex: none; width: 18px; height: 18px; border-radius: 6px; opacity: 0; color: var(--coral); font-size: 14px; line-height: 1; }
+  .dl:hover .dl-plus { opacity: 1; }
+  .dl-plus:active { background: var(--hover); }
+  .rv-hact { flex: none; font-size: 11.5px; padding: 2px 8px; border-radius: 6px; background: color-mix(in srgb, currentColor 8%, transparent); color: var(--text); }
+  .rv-hact:active { background: var(--hover); }
+  .dl-cmt { margin: 2px 10px 2px 48px; padding: 6px 10px; border-left: 2px solid var(--coral); background: color-mix(in srgb, var(--coral) 6%, transparent); border-radius: 0 8px 8px 0; display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; }
+  .dl-cmt-t { flex: 1; white-space: pre-wrap; }
+  .dl-cmt-x { flex: none; color: var(--muted); }
+  .dl-cmt-ed { margin: 2px 10px 6px 48px; }
+  .dl-cmt-ed textarea { width: 100%; font-size: 13px; padding: 8px; border: 1px solid var(--divider); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }
+  .dl-cmt-btns { display: flex; gap: 8px; margin-top: 6px; }
+  .dl-cmt-btns button { font-size: 12.5px; padding: 4px 12px; border-radius: 8px; background: color-mix(in srgb, currentColor 8%, transparent); }
 
   .spin { width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--coral); border-radius: 50%; animation: rvspin .8s linear infinite; flex: none; }
   @keyframes rvspin { to { transform: rotate(360deg); } }

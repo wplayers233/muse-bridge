@@ -34,6 +34,18 @@ function git(ws, args, { maxBuffer = 16 * 1024 * 1024 } = {}) {
   });
 }
 
+// 带错误详情的 git（破坏性操作要把失败原因说清，不能只回 null）。
+function git2(ws, args, { timeout = 15_000, input = null } = {}) {
+  return new Promise((resolve) => {
+    const child = execFile('git', ['-c', 'core.quotepath=false', ...args], { cwd: ws, env: GIT_ENV, timeout, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      resolve(err ? { ok: false, out: String(stdout ?? ''), err: String(stderr || err.message || err).trim() } : { ok: true, out: String(stdout ?? ''), err: '' });
+    });
+    if (input != null) {
+      try { child.stdin.write(input); child.stdin.end(); } catch {}
+    }
+  });
+}
+
 // 工作空间在仓库里的相对前缀（仓库根 → ''，子目录 → 'a/b/'）。
 // 工作空间是某个仓库的【子目录】时（快照桶就落在 claude-bridge 仓里！），不加限定的
 // git diff/status 会把【整个仓库】的变更端上来——对公开快照访客等于泄露整份源码工作树。
@@ -57,6 +69,44 @@ async function reviewBase(ws) {
     break;
   }
   return { base: 'HEAD', label: branch, branch };
+}
+
+// ── 审阅范围（P0：官方 PC 端的五种范围；Last turn 不走后端，见 P1）─────────────
+// 返回 git diff 要拼的那组 range 参数 + 展示用标签 + 是否带未跟踪文件。
+//   unstaged：工作区 vs 暂存区（git diff）+ 未跟踪
+//   staged：暂存区 vs HEAD（git diff --cached），不带未跟踪
+//   commit：该提交相对其父提交（根提交对空树），不带未跟踪
+//   branch：工作区 vs 基线（merge-base(HEAD, base) 或自动基线）+ 未跟踪
+// base 参数只在 branch 范围下用（选定的基线分支名）；sha 只在 commit 范围下用。
+// 抛带 status 的 Error（400 = 参数不合法，调用方直接回给前端）。
+const SHA_RE = /^[0-9a-f]{4,40}$/i;
+const REF_RE = /^[A-Za-z0-9._/-]+$/;
+async function scopeRange(ws, { scope = 'branch', sha = '', base = '' } = {}) {
+  if (scope === 'unstaged') return { args: [], label: '工作区', untracked: true, scope };
+  if (scope === 'staged') return { args: ['--cached'], label: '暂存区', untracked: false, scope };
+  if (scope === 'commit') {
+    const s = String(sha || '').trim();
+    if (!SHA_RE.test(s)) throw Object.assign(new Error('提交号不合法'), { status: 400 });
+    const full = await git(ws, ['rev-parse', '--verify', '-q', s + '^{commit}']);
+    if (!full) throw Object.assign(new Error('找不到这个提交'), { status: 400 });
+    const commit = full.trim();
+    const parent = await git(ws, ['rev-parse', '--verify', '-q', commit + '^']);
+    const subject = ((await git(ws, ['log', '-1', '--format=%s', commit])) || '').trim();
+    return { args: [parent ? parent.trim() : EMPTY_TREE, commit], label: subject || commit.slice(0, 7), untracked: false, scope, sha: commit, subject };
+  }
+  if (scope === 'branch') {
+    const b = String(base || '').trim();
+    if (b) {
+      if (!REF_RE.test(b)) throw Object.assign(new Error('分支名不合法'), { status: 400 });
+      const ref = await git(ws, ['rev-parse', '--verify', '-q', 'refs/heads/' + b]);
+      if (!ref) throw Object.assign(new Error('找不到这个分支'), { status: 400 });
+      const mb = await git(ws, ['merge-base', 'HEAD', b]);
+      return { args: [mb ? mb.trim() : b], label: b, untracked: true, scope, base: b };
+    }
+    const auto = await reviewBase(ws);
+    return { args: [auto.base], label: auto.label, untracked: true, scope, branch: auto.branch };
+  }
+  throw Object.assign(new Error('未知的审阅范围'), { status: 400 });
 }
 
 // 解析 `git diff --numstat -z -M` ：常规记录 "add\tdel\tpath\0"，改名记录 "add\tdel\t\0old\0new\0"。
@@ -195,33 +245,72 @@ export function registerClaudeDockRoutes(router, { identify }) {
     json(res, 200, { rel, git: isGit, branch, worktree, wtNew: isGit && !worktree && ctx.kind !== 'snap', shell: !!ctx.shell, snap: ctx.kind === 'snap' });
   });
 
-  // ── 审阅：变更概览 ──────────────────────────────────────────────────────────
+  // ── 审阅：变更概览（scope：unstaged / staged / commit / branch；缺省 branch 保持老行为） ──
   router.on('GET', '/api/claude/review', async (req, res, url) => {
     const g = dockCtx(req, res, url.searchParams.get('ws'));
     if (!g) return;
     const { ws } = g;
     if ((await git(ws, ['rev-parse', '--is-inside-work-tree'])) == null) return json(res, 200, { git: false });
-    const { base, label, branch } = await reviewBase(ws);
+    let range;
+    try {
+      range = await scopeRange(ws, {
+        scope: url.searchParams.get('scope') || 'branch',
+        sha: url.searchParams.get('sha') || '',
+        base: url.searchParams.get('base') || '',
+      });
+    } catch (e) { return fail(res, e); }
+    const branch = ((await git(ws, ['rev-parse', '--abbrev-ref', 'HEAD'])) || '').trim() || 'HEAD';
     const prefix = await gitPrefix(ws);
     const [numstat, nameStatus] = await Promise.all([
-      git(ws, ['diff', '--numstat', '-z', '-M', '--relative', base, '--', '.']),
-      git(ws, ['diff', '--name-status', '-z', '-M', '--relative', base, '--', '.']),
+      git(ws, ['diff', '--numstat', '-z', '-M', '--relative', ...range.args, '--', '.']),
+      git(ws, ['diff', '--name-status', '-z', '-M', '--relative', ...range.args, '--', '.']),
     ]);
     const stMap = parseNameStatusZ(nameStatus);
     const files = parseNumstatZ(numstat).map((f) => ({ ...f, st: stMap.get(f.path) || 'M' }));
     const seen = new Set(files.map((f) => f.path));
     let truncated = false;
-    for (const rel of await untrackedFiles(ws, prefix)) {
-      if (seen.has(rel)) continue;
-      const abs = insideWs(ws, rel);
-      if (!abs) continue;
-      const stat = untrackedStat(abs);
-      if (!stat) continue;
-      files.push({ path: rel, add: stat.add, del: 0, bin: stat.bin, st: 'U' });
-      if (files.length >= 800) { truncated = true; break; }
+    if (range.untracked) {
+      for (const rel of await untrackedFiles(ws, prefix)) {
+        if (seen.has(rel)) continue;
+        const abs = insideWs(ws, rel);
+        if (!abs) continue;
+        const stat = untrackedStat(abs);
+        if (!stat) continue;
+        files.push({ path: rel, add: stat.add, del: 0, bin: stat.bin, st: 'U' });
+        if (files.length >= 800) { truncated = true; break; }
+      }
     }
     const total = files.reduce((a, f) => ({ add: a.add + (f.add || 0), del: a.del + (f.del || 0) }), { add: 0, del: 0 });
-    json(res, 200, { git: true, branch, base: label, files, total, truncated });
+    json(res, 200, { git: true, branch, base: range.label, scope: range.scope, sha: range.sha || null, subject: range.subject || null, files, total, truncated });
+  });
+
+  // ── 审阅：最近提交（commit 范围的下拉）──────────────────────────────────────
+  router.on('GET', '/api/claude/review/commits', async (req, res, url) => {
+    const g = dockCtx(req, res, url.searchParams.get('ws'));
+    if (!g) return;
+    const { ws } = g;
+    const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '30', 10) || 30));
+    const out = await git(ws, ['log', `--format=%H%x1f%h%x1f%s%x1f%an%x1f%cI`, '-z', '-n', String(limit)]);
+    if (out == null) return json(res, 200, { commits: [] });
+    const commits = out.split('\0').filter(Boolean).map((line) => {
+      const [sha, short, subject, author, date] = line.split('\x1f');
+      return { sha, short, subject, author, date };
+    });
+    json(res, 200, { commits });
+  });
+
+  // ── 审阅：本地分支（branch 范围的基线下拉）──────────────────────────────────
+  router.on('GET', '/api/claude/review/branches', async (req, res, url) => {
+    const g = dockCtx(req, res, url.searchParams.get('ws'));
+    if (!g) return;
+    const { ws } = g;
+    const out = await git(ws, ['branch', '--format=%(refname:short)%09%(HEAD)']);
+    if (out == null) return json(res, 200, { branches: [] });
+    const branches = out.split('\n').filter(Boolean).map((line) => {
+      const [name, head] = line.split('\t');
+      return { name, current: head === '*' };
+    });
+    json(res, 200, { branches });
   });
 
   // ── 审阅：单文件 diff（懒加载展开）──────────────────────────────────────────
@@ -253,11 +342,20 @@ export function registerClaudeDockRoutes(router, { identify }) {
       const body = `@@ -0,0 +1,${lines.length} @@\n` + lines.map((l) => '+' + l).join('\n');
       return json(res, 200, { text: body, truncated });
     }
-    const { base } = await reviewBase(ws);
+    // 范围与概览接口同一套：unstaged/staged/commit/branch 各自的 range（见 scopeRange）。
+    // commit 范围的单文件 diff 也是「提交 vs 其父」，不是「文件 vs 基线」。
+    let range;
+    try {
+      range = await scopeRange(ws, {
+        scope: url.searchParams.get('scope') || 'branch',
+        sha: url.searchParams.get('sha') || '',
+        base: url.searchParams.get('base') || '',
+      });
+    } catch (e) { return fail(res, e); }
     // pathspec 本就以 cwd 为基准，--relative 让输出头部路径也回到工作空间相对——
     // 与上面清单里的路径同一套坐标系（工作空间=仓库子目录时尤其关键）。
     const spec = from && from !== rel ? [from, rel] : [rel];
-    let out = await git(ws, ['diff', '--no-ext-diff', '--unified=3', '-M', '--relative', base, '--', ...spec]);
+    let out = await git(ws, ['diff', '--no-ext-diff', '--unified=3', '-M', '--relative', ...range.args, '--', ...spec]);
     if (out == null) return json(res, 500, { error: 'git diff 失败' });
     let truncated = false;
     if (out.length > 1024 * 1024) {
@@ -267,6 +365,73 @@ export function registerClaudeDockRoutes(router, { identify }) {
       truncated = true;
     }
     json(res, 200, { text: out, truncated, bin: /^Binary files /m.test(out) });
+  });
+
+  // ── 审阅：Git 操作（P0：三级 stage / unstage / revert）───────────────────────
+  // 破坏性操作，门禁与读接口同一套（dockCtx + authorizeProjectPath），不另开新口子。
+  // body：{ ws, op: stage|unstage|revert, level: all|file|hunk, file?, patch?, base? }
+  //   level=all：整 diff（stage-all = add -A；unstage-all = reset；revert-all = 恢复到 base + 清未跟踪）
+  //   level=file：单个文件（stage = add；unstage = reset；revert = 恢复到 base，未跟踪则删除）
+  //   level=hunk：单个 hunk（patch = 带文件头的独立 patch 文本；先 --check 再 apply）
+  // base 只在 branch 范围的 revert 下传（恢复到基线）；缺省 HEAD。
+  // patch 校验：恰好一个 diff --git 块、目标路径必须等于 file，防止一份 patch 改多个文件。
+  router.on('POST', '/api/claude/review/git', async (req, res) => {
+    let body; try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const g = dockCtx(req, res, body.ws);
+    if (!g) return;
+    const { ws } = g;
+    const op = String(body.op || '');
+    const level = String(body.level || '');
+    if (!['stage', 'unstage', 'revert'].includes(op)) return json(res, 400, { error: '未知的操作' });
+    if (!['all', 'file', 'hunk'].includes(level)) return json(res, 400, { error: '未知的层级' });
+    const file = level === 'all' ? '' : String(body.file || '');
+    if (level !== 'all' && !insideWs(ws, file)) return json(res, 400, { error: 'bad file path' });
+    // revert 的恢复目标：缺省 HEAD；branch 范围传基线分支名/提交。
+    let base = 'HEAD';
+    if (op === 'revert' && body.base) {
+      const b = String(body.base).trim();
+      if (!REF_RE.test(b) && !SHA_RE.test(b)) return json(res, 400, { error: '恢复目标不合法' });
+      if ((await git(ws, ['rev-parse', '--verify', '-q', b]))) base = b;
+      else return json(res, 400, { error: '找不到恢复目标' });
+    }
+    const run = async (args, input = null) => {
+      const r = await git2(ws, args, { input });
+      if (!r.ok) return json(res, 409, { error: r.err || 'git 操作失败' });
+      return json(res, 200, { ok: true });
+    };
+    if (level === 'all') {
+      if (op === 'stage') return run(['add', '-A', '--', '.']);
+      if (op === 'unstage') return run(['reset', '-q', '--', '.']);
+      // revert-all：先恢复到 base，再清未跟踪（未跟踪文件删除不可恢复，前端需二次确认）。
+      const r1 = await git2(ws, ['checkout', base, '--', '.']);
+      if (!r1.ok) return json(res, 409, { error: r1.err || 'git 操作失败' });
+      return run(['clean', '-fd', '--', '.']);
+    }
+    if (level === 'file') {
+      if (op === 'stage') return run(['add', '--', file]);
+      if (op === 'unstage') return run(['reset', '-q', '--', file]);
+      // revert-file：未跟踪 → 删除；已跟踪 → 从 base 恢复（base=HEAD 时即丢弃暂存+未暂存）。
+      const tracked = await git(ws, ['ls-files', '--error-unmatch', '--', file]);
+      if (tracked == null) return run(['clean', '-f', '--', file]);
+      return run(['checkout', base, '--', file]);
+    }
+    // level=hunk：patch 校验 + --check + apply。
+    const patch = String(body.patch || '');
+    if (!patch.trim()) return json(res, 400, { error: '缺少 hunk 内容' });
+    if (!patch.trimStart().startsWith('diff --git ')) return json(res, 400, { error: 'hunk 内容必须带 diff --git 文件头' });
+    const blocks = patch.split(/^diff --git /m).filter(Boolean);
+    if (blocks.length !== 1) return json(res, 400, { error: 'hunk 内容必须恰好是一个文件的 diff' });
+    const mPlus = /^\+{3} (?:b\/)?(.+)$/m.exec(patch);
+    const mMinus = /^--- (?:a\/)?(.+)$/m.exec(patch);
+    const target = mPlus && mPlus[1] !== '/dev/null' ? mPlus[1].trim() : (mMinus ? mMinus[1].trim() : '');
+    if (target !== file) return json(res, 400, { error: 'hunk 内容与文件不匹配' });
+    if (!/^@@ /m.test(patch)) return json(res, 400, { error: 'hunk 内容缺少 @@ 头' });
+    const applyArgs = op === 'stage' ? ['apply', '--cached', '-']
+      : op === 'unstage' ? ['apply', '--cached', '--reverse', '-']
+      : ['apply', '--reverse', '-'];
+    const chk = await git2(ws, [...applyArgs.slice(0, -1), '--check', '-'], { input: patch });
+    if (!chk.ok) return json(res, 409, { error: chk.err || 'hunk 已过期或冲突，无法应用' });
+    return run(applyArgs, patch);
   });
 
   // ── 终端：SSE 流（自动开壳 + 快照重放 + 实时增量）───────────────────────────

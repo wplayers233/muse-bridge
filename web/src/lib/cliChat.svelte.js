@@ -12,6 +12,7 @@ import { noteApiFailure } from './feedback.svelte.js';
 import { t } from './i18n.js';
 import { loadAgentPlan } from './cliPlan.svelte.js';
 import { emitAgentFs } from './uiReport.js';
+import { takeReviewComments, formatReviewComments } from './reviewComments.svelte.js';
 
 const MAX_ITEMS = 400;   // 一个分页里留着的消息条数上限（流式增量都并进同一条）
 
@@ -513,7 +514,11 @@ function applyEvent(agent, itemId, ev) {
 }
 
 export async function cliSend(agent, prompt, images = [], opts = {}) {
-  const text = String(prompt || '');
+  let text = String(prompt || '');
+  // 审阅面板的行内评论：随下一条消息带上（取走清空，见 reviewComments.svelte.js）。
+  // key 是 agent 当前工作目录——面板写评论时用的也是这个 ws，同一工作空间才对得上。
+  const comments = takeReviewComments(cwdOf(agent));
+  if (comments.length) text = text + '\n\n' + formatReviewComments(comments);
   const c = cliChat[agent];
   if (c.busy || !text.trim()) return;
   c.error = '';
