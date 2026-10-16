@@ -684,9 +684,12 @@ export async function* runAppServerTurn(agent, o = {}) {
         if (p.threadName) yield { type: 'sessionName', sessionId: String(p.threadId || ''), name: String(p.threadName) };
         continue;
       }
-      // 整轮聚合 diff：喂审阅面板（界面侧暂存，审阅面板集成是后续工作）。
+      // 整轮聚合 diff：喂审阅面板「上一轮」范围（P1 已接）。
+      // 截断上限 20_000（上游聚合 diff 可很大）；截断时带 truncated 标记——
+      // 面板靠它提示“已截断，仅供预览”，不能靠前端猜长度（长度 20000 的 diff 未必被截过）。
       if (m === 'turn/diff/updated') {
-        yield { type: 'diff', diff: String(p.diff || '').slice(0, 20_000) };
+        const raw = String(p.diff || '');
+        yield { type: 'diff', diff: raw.slice(0, 20_000), truncated: raw.length > 20_000 };
         continue;
       }
       // 文件树刷新信号：界面侧触发文件面板重载（onAgentFs）。

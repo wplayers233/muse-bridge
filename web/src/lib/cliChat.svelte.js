@@ -70,10 +70,12 @@ const trim = (items) => items.map((m) => ({
     input: typeof tl.input === 'string' ? tl.input.slice(0, MAX_SAVE_TOOL_TEXT) : undefined,
   })) : [],
   // 整轮聚合 diff 同样限长（turn/diff/updated 全量 diff 可能很大）。
-  // diffTruncated：快照截断标记——审阅面板「上一轮」范围据此提示「可能不完整」，
-  // 别把截断后的 diff 当完整 diff 渲染（P1）。
+  // diffTruncated：两层截断的并集——快照层（本轮 diff 超过 MAX_SAVE_TEXT 被 slice）
+  // 或上游层（后端事件已带 truncated，上游 20_000 上限截过）。上游标记为真时
+  // 本轮 diff 长度恒为 20_000（> MAX_SAVE_TEXT），光靠长度也能推出真，但显式保留
+  // 更稳（以后上游上限若降到 4000 以下，长度判断就失效了）。
   diff: typeof m.diff === 'string' ? m.diff.slice(0, MAX_SAVE_TEXT) : m.diff,
-  diffTruncated: typeof m.diff === 'string' && m.diff.length > MAX_SAVE_TEXT,
+  diffTruncated: m.diffTruncated === true || (typeof m.diff === 'string' && m.diff.length > MAX_SAVE_TEXT),
   todos: Array.isArray(m.todos) ? m.todos.slice(-40) : [],
   notes: Array.isArray(m.notes) ? m.notes.slice(-20) : [],
   error: m.error || '',
@@ -460,7 +462,8 @@ function applyEvent(agent, itemId, ev) {
     // 会话设置（模型/思考深度等）：存下来备查，不进聊天刷屏。
     case 'settings': m.settings = { model: String(ev.model || ''), effort: String(ev.effort || '') }; break;
     // 整轮聚合 diff：存下来，审阅面板「上一轮」范围直接读它（P1）。
-    case 'diff': m.diff = String(ev.diff || ''); m.diffTruncated = false; break;
+    // truncated 来自后端事件（上游 20_000 上限截过才为真）；没带标记的旧事件当没截断。
+    case 'diff': m.diff = String(ev.diff || ''); m.diffTruncated = !!ev.truncated; break;
     // 项目变了（文件增删改）：触发文件面板重载当前目录。
     case 'projectChanged': emitAgentFs(); break;
     case 'todo': m.todos = Array.isArray(ev.items) ? ev.items.slice() : []; break;

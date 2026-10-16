@@ -185,6 +185,8 @@ rl.on('line', (line) => {
     n('mcpServer/startupStatus/updated', { name: 'mcp-b', status: 'ready', error: null, failureReason: null, threadId: null });
     n('thread/name/updated', { threadId: 'th_fake', threadName: '自动命名标题' });
     n('turn/diff/updated', { diff: 'diff --git a/x b/x', threadId: 'th_fake', turnId: 't1' });
+    // 超长 diff：后端截到 20_000 并带 truncated 标记（审阅面板「上一轮」靠它提示截断）。
+    n('turn/diff/updated', { diff: 'y'.repeat(20001), threadId: 'th_fake', turnId: 't1' });
     n('project/changed', { changeType: 'updated', projectId: 'p1' });
     n('skills/changed', {});
     n('item/mcpToolCall/progress', { itemId: 'mcp1', message: '正在查…', threadId: 'th_fake', turnId: 't1' });
@@ -304,7 +306,7 @@ test('runAppServerTurn：P4 被丢的通知现在都有分支（警告/改派/MC
     const kinds = (t) => events.filter((e) => e.type === t);
     assert.deepEqual(kinds('mcp'), [{ type: 'mcp', name: 'mcp-b', status: 'ready' }]);
     assert.deepEqual(kinds('sessionName'), [{ type: 'sessionName', sessionId: 'th_fake', name: '自动命名标题' }]);
-    assert.equal(kinds('diff')[0].diff, 'diff --git a/x b/x');
+    assert.deepEqual(kinds('diff')[0], { type: 'diff', diff: 'diff --git a/x b/x', truncated: false });
     assert.deepEqual(kinds('projectChanged'), [{ type: 'projectChanged', changeType: 'updated', projectId: 'p1' }]);
     assert.equal(kinds('skillsChanged').length, 1);
     assert.deepEqual(kinds('toolProgress'), [{ type: 'toolProgress', id: 'mcp1', message: '正在查…' }]);
@@ -314,6 +316,18 @@ test('runAppServerTurn：P4 被丢的通知现在都有分支（警告/改派/MC
     assert.equal(kinds('ratelimits').length, 1);
     assert.deepEqual(kinds('account'), [{ type: 'account', planType: 'plus', authMode: 'chatgpt' }]);
     assert.equal(events.find((e) => e.type === 'done').failed, false);
+  });
+});
+
+test('runAppServerTurn：turn/diff/updated 超过 20000 字截断并带 truncated 标记', async () => {
+  await withFakeCodex(async ({ env }) => {
+    const events = [];
+    for await (const ev of runAppServerTurn('codex', { prompt: '走一轮', env, keyEnv: {} })) events.push(ev);
+    const diffs = events.filter((e) => e.type === 'diff');
+    assert.equal(diffs.length, 2);
+    assert.equal(diffs[1].truncated, true, '超长 diff 带 truncated 标记');
+    assert.equal(diffs[1].diff.length, 20000, '超长 diff 截到 20_000');
+    assert.equal(diffs[1].diff, 'y'.repeat(20000));
   });
 });
 

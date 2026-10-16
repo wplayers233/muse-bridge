@@ -92,6 +92,7 @@ export default {
   '上一轮改动': 'Last turn changes',
   '上一轮没有产生改动': 'The last turn made no changes',
   '上一轮 diff 是快照，暂存 / 还原请切到未暂存范围': 'The last-turn diff is a snapshot. Switch to the Unstaged scope to stage or revert.',
+  '本轮 diff 已截断，仅供预览，完整改动请看对应 Git 范围': 'This turn’s diff was truncated. Preview only — see the matching Git scope for the full changes.',
   '选择一个提交…': 'Select a commit…',
   '请先选择一个提交': 'Select a commit first',
   '自动基线（main / master）': 'Automatic base (main / master)',

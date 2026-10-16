@@ -56,6 +56,9 @@
     : null);
   const lastTurnFiles = $derived(lastTurnItem ? parseLastTurnDiff(lastTurnItem.diff, t('上一轮改动')) : []);
   const lastTurnTotal = $derived(lastTurnFiles.reduce((a, f) => ({ add: a.add + (f.add || 0), del: a.del + (f.del || 0) }), { add: 0, del: 0 }));
+  // 上一轮 diff 截断（快照层 4000 / 上游层 20000 任一截过）：顶部警告横幅用它，
+  // 不用 view.truncated（git 范围的 truncated 是“文件清单超 800 截断”，另一回事）。
+  const lastTurnTruncated = $derived(scope === 'lastturn' && !!lastTurnItem?.diffTruncated);
   // 渲染统一走 view：git 范围用后端 data，上一轮用本地算的（不走后端；截断标记来自快照）。
   const view = $derived(scope === 'lastturn'
     ? { git: true, scope: 'lastturn', branch: '', base: t('上一轮'), files: lastTurnFiles, total: lastTurnTotal, truncated: !!lastTurnItem?.diffTruncated }
@@ -217,12 +220,15 @@
       {/if}
       <button class="rv-refresh" aria-label={t('刷新')} onclick={refresh}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v5h-5"/></svg></button>
     </div>
+    {#if lastTurnTruncated}
+      <div class="rv-warn">{t('本轮 diff 已截断，仅供预览，完整改动请看对应 Git 范围')}</div>
+    {/if}
     {#if scope === 'commit' && !sha}
       <div class="rv-empty">{t('请先选择一个提交')}</div>
     {:else if !view.files.length}
       <div class="rv-empty">{scope === 'lastturn' ? t('上一轮没有产生改动') : t('工作树很干净，没有改动')}</div>
     {:else}
-      <div class="rv-hint">{t('大文件默认折叠，点击文件展开 diff。共 {n} 个文件', { n: view.files.length })} <em class="add">+{view.total.add}</em> <em class="del">−{view.total.del}</em>{#if view.truncated}{t('（已截断）')}{/if}</div>
+      <div class="rv-hint">{t('大文件默认折叠，点击文件展开 diff。共 {n} 个文件', { n: view.files.length })} <em class="add">+{view.total.add}</em> <em class="del">−{view.total.del}</em>{#if view.truncated && scope !== 'lastturn'}{t('（已截断）')}{/if}</div>
       {#if view.files.length}
         <div class="rv-actions">
           {#if !snapReadOnly}
@@ -367,6 +373,7 @@
   @media (hover: hover) { .rv-refresh:hover { background: var(--hover); color: var(--text); } }
 
   .rv-hint { color: var(--muted); font-size: 12px; padding: 2px 6px 10px; }
+  .rv-warn { margin: 2px 6px 8px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--coral) 9%, transparent); color: var(--coral); font-size: 12.5px; }
   .rv-hint .add { color: var(--ok); font-style: normal; }
   .rv-hint .del { color: var(--crit); font-style: normal; }
 
