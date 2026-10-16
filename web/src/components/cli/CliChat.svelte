@@ -55,6 +55,8 @@
   }
 
   let draft = $state('');
+  // 有待发送的行内评论时，正文为空也能发（发送按钮与 send() 的门禁共用这一个）。
+  const hasPendingComments = $derived((reviewComments.byWs[cwdOf(agent)] || []).length > 0);
   let feedEl = $state(null);
   let showReasoning = $state(false);
   // 计划模式开关（仅 Codex）：打开后这一条只出计划、不改文件；开关本身不随消息走，
@@ -74,7 +76,8 @@
 
   function send() {
     const text = draft.trim();
-    if (!text || chat.busy || !ready) return;
+    // 正文为空、只有行内评论时也能发（消息就是评论指令块，见 cliSend）。
+    if ((!text && !hasPendingComments) || chat.busy || !ready) return;
     const imgs = agent === 'codex' ? atts : [];
     draft = ''; atts = []; mOpen = false; mItems = [];
     cliSend(agent, text, imgs, { plan: agent === 'codex' && planMode });
@@ -473,7 +476,7 @@
               <svg viewBox="0 0 20 20" fill="currentColor"><rect x="6" y="6" width="8" height="8" rx="1.5"/></svg>
             </button>
           {:else}
-            <button class="send" onclick={send} disabled={!ready || !draft.trim()} aria-label={t('发送')}>
+            <button class="send" onclick={send} disabled={!ready || (!draft.trim() && !hasPendingComments)} aria-label={t('发送')}>
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15.5V5M10 5l-4 4M10 5l4 4"/></svg>
             </button>
           {/if}

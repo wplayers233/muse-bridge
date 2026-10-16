@@ -20,6 +20,7 @@
   import { cliChat } from '../../lib/cliChat.svelte.js';
   import { parseDiff, parseLastTurnDiff } from '../../lib/reviewDiff.js';
   import { reviewComments, addReviewComment, dropReviewComment, dropAllReviewComments, reviewCommentCount } from '../../lib/reviewComments.svelte.js';
+  import { isReviewCommentStale, orphanReviewComments } from '../../lib/reviewCommentAnchor.js';
   let { dockState = dock, agent = '' } = $props();
 
   let loading = $state(true);
@@ -113,6 +114,8 @@
 
   // ── Git 操作：op=stage|unstage|revert，level=all|file|hunk ──
   // 还原要点两次确认（第一次只武装按钮，第二次才执行）；hunk 的 patch = 文件头 + 该 hunk。
+  // 分支范围的 revert 回到基线：传概览接口返回的 baseRef（merge-base SHA），不是基线分支的
+  // 尖端、也不是 HEAD——尖端可能含基线之后的新提交，还原到它会带进不该有的改动。
   async function gitOp(op, level, file = '', patch = '') {
     const key = `${op}:${level}:${file}:${patch ? 'h' : ''}`;
     if (op === 'revert' && confirmKey !== key) { confirmKey = key; setTimeout(() => { if (confirmKey === key) confirmKey = ''; }, 4000); return; }
@@ -122,7 +125,8 @@
     try {
       await api.post('/api/claude/review/git', {
         ws, op, level, file, patch,
-        ...(scope === 'branch' && baseBranch ? { base: baseBranch } : {}),
+        // 只有 branch 范围且概览是同范围的才带 baseRef（切范围后 data 可能还是旧范围的，防串）。
+        ...(scope === 'branch' && data?.scope === 'branch' && data.baseRef ? { base: data.baseRef } : {}),
       });
       showToast(op === 'revert' ? t('已还原') : t('已执行'));
       await refresh();
@@ -138,6 +142,9 @@
   const canStage = $derived(scope === 'unstaged');
   const canUnstage = $derived(scope === 'staged');
   const canRevert = $derived(scope === 'unstaged' || scope === 'staged' || scope === 'branch');
+  // 快照访客只读：后端 403，前端直接藏掉 Git 操作按钮（行内评论不算 Git 操作，照常写）。
+  const snapReadOnly = $derived(!!view?.readOnly);
+  // 提交范围：按钮不藏、改成禁用（让用户看到“这里有操作，但历史 diff 动不了”）。
 
   // ── 行内评论 ──
   function startComment(file, line) {
@@ -155,6 +162,9 @@
     showToast(t('评论已记下，随下一条消息发给模型'));
   }
   const commentsFor = (file, side, no) => (reviewComments.byWs[ws] || []).filter((c) => c.file === file && c.side === side && c.no === no);
+  // 孤儿评论：锚点的行号在当前 diff 里已不存在（行被删 / diff 已换一批）——
+  // 不渲染就永远找不到它、只能「清空」全部删；单独列在文件末尾，带“该行已变化”与单条删除。
+  // 判定见 lib/reviewCommentAnchor.js（纯函数，可单测）。
 
   const stLabel = { A: tc('diff', '新增'), D: tc('diff', '删除'), R: tc('diff', '改名'), U: tc('diff', '未跟踪'), C: tc('diff', '复制') };
   const SCOPE_LABEL = { unstaged: t('未暂存'), staged: t('已暂存'), commit: t('提交'), branch: t('分支'), lastturn: t('上一轮') };
@@ -215,9 +225,17 @@
       <div class="rv-hint">{t('大文件默认折叠，点击文件展开 diff。共 {n} 个文件', { n: view.files.length })} <em class="add">+{view.total.add}</em> <em class="del">−{view.total.del}</em>{#if view.truncated}{t('（已截断）')}{/if}</div>
       {#if view.files.length}
         <div class="rv-actions">
-          {#if canStage}<button class="rv-act" onclick={() => gitOp('stage', 'all')}>{t('全部暂存')}</button>{/if}
-          {#if canUnstage}<button class="rv-act" onclick={() => gitOp('unstage', 'all')}>{t('全部取消暂存')}</button>{/if}
-          {#if canRevert}<button class="rv-act danger" onclick={() => gitOp('revert', 'all')}>{confirmKey === 'revert:all::' ? t('确认还原全部？') : t('全部还原')}</button>{/if}
+          {#if !snapReadOnly}
+            {#if scope === 'commit'}
+              <button class="rv-act" disabled>{t('全部暂存')}</button>
+              <button class="rv-act" disabled>{t('全部取消暂存')}</button>
+              <button class="rv-act danger" disabled>{t('全部还原')}</button>
+            {:else if scope !== 'lastturn'}
+              {#if canStage}<button class="rv-act" onclick={() => gitOp('stage', 'all')}>{t('全部暂存')}</button>{/if}
+              {#if canUnstage}<button class="rv-act" onclick={() => gitOp('unstage', 'all')}>{t('全部取消暂存')}</button>{/if}
+              {#if canRevert}<button class="rv-act danger" onclick={() => gitOp('revert', 'all')}>{confirmKey === 'revert:all::' ? t('确认还原全部（未跟踪文件会被删除）') : t('全部还原')}</button>{/if}
+            {/if}
+          {/if}
           {#if scope === 'commit'}<span class="rv-ro">{t('提交是只读的')}</span>{/if}
           {#if scope === 'lastturn'}<span class="rv-ro">{t('上一轮 diff 是快照，暂存 / 还原请切到未暂存范围')}</span>{/if}
         </div>
@@ -242,11 +260,19 @@
                 {:else if !open[f.path].text}
                   <div class="rv-dload">{t('（无差异内容）')}</div>
                 {:else}
-                  <div class="rv-facts">
-                    {#if canStage}<button class="rv-fact" onclick={() => gitOp('stage', 'file', f.path)}>{t('暂存文件')}</button>{/if}
-                    {#if canUnstage}<button class="rv-fact" onclick={() => gitOp('unstage', 'file', f.path)}>{t('取消暂存')}</button>{/if}
-                    {#if canRevert}<button class="rv-fact danger" onclick={() => gitOp('revert', 'file', f.path)}>{confirmKey === `revert:file:${f.path}:` ? t('确认还原？') : t('还原文件')}</button>{/if}
-                  </div>
+                  {#if !snapReadOnly && (scope === 'commit' || canStage || canUnstage || canRevert)}
+                    <div class="rv-facts">
+                      {#if scope === 'commit'}
+                        <button class="rv-fact" disabled>{t('暂存文件')}</button>
+                        <button class="rv-fact" disabled>{t('取消暂存')}</button>
+                        <button class="rv-fact danger" disabled>{t('还原文件')}</button>
+                      {:else}
+                        {#if canStage}<button class="rv-fact" onclick={() => gitOp('stage', 'file', f.path)}>{t('暂存文件')}</button>{/if}
+                        {#if canUnstage}<button class="rv-fact" onclick={() => gitOp('unstage', 'file', f.path)}>{t('取消暂存')}</button>{/if}
+                        {#if canRevert}<button class="rv-fact danger" onclick={() => gitOp('revert', 'file', f.path)}>{confirmKey === `revert:file:${f.path}:` ? t('确认还原？') : t('还原文件')}</button>{/if}
+                      {/if}
+                    </div>
+                  {/if}
                   <div class="rv-code">
                     {#each open[f.path].parsed.header as hl}
                       <div class="dl meta">{hl || ' '}</div>
@@ -254,11 +280,16 @@
                     {#each open[f.path].parsed.hunks as hunk}
                       <div class="dl hunk">
                         <span>{hunk.header}</span>
-                        {#if scope === 'unstaged'}
-                          <button class="rv-hact" onclick={() => gitOp('stage', 'hunk', f.path, hunkPatch(open[f.path].parsed, hunk))}>{t('暂存此块')}</button>
-                          <button class="rv-hact danger" onclick={() => gitOp('revert', 'hunk', f.path, hunkPatch(open[f.path].parsed, hunk))}>{confirmKey === `revert:hunk:${f.path}:h` ? t('确认还原？') : t('还原此块')}</button>
-                        {:else if scope === 'staged'}
-                          <button class="rv-hact" onclick={() => gitOp('unstage', 'hunk', f.path, hunkPatch(open[f.path].parsed, hunk))}>{t('取消暂存此块')}</button>
+                        {#if !snapReadOnly}
+                          {#if scope === 'commit'}
+                            <button class="rv-hact" disabled>{t('暂存此块')}</button>
+                            <button class="rv-hact danger" disabled>{t('还原此块')}</button>
+                          {:else if scope === 'unstaged'}
+                            <button class="rv-hact" onclick={() => gitOp('stage', 'hunk', f.path, hunkPatch(open[f.path].parsed, hunk))}>{t('暂存此块')}</button>
+                            <button class="rv-hact danger" onclick={() => gitOp('revert', 'hunk', f.path, hunkPatch(open[f.path].parsed, hunk))}>{confirmKey === `revert:hunk:${f.path}:h` ? t('确认还原？') : t('还原此块')}</button>
+                          {:else if scope === 'staged'}
+                            <button class="rv-hact" onclick={() => gitOp('unstage', 'hunk', f.path, hunkPatch(open[f.path].parsed, hunk))}>{t('取消暂存此块')}</button>
+                          {/if}
                         {/if}
                       </div>
                       {#each hunk.lines as ln}
@@ -271,6 +302,7 @@
                         </div>
                         {#each commentsFor(f.path, ln.cls === 'del' ? 'old' : 'new', ln.cls === 'del' ? ln.oldNo : ln.newNo) as c}
                           <div class="dl-cmt">
+                            {#if isReviewCommentStale(c, ln.text)}<span class="dl-cmt-stale">{t('该行已变化')}</span>{/if}
                             <span class="dl-cmt-t">{c.text}</span>
                             <button class="dl-cmt-x" aria-label={t('删除评论')} onclick={() => dropReviewComment(ws, c.id)}>×</button>
                           </div>
@@ -285,6 +317,13 @@
                           </div>
                         {/if}
                       {/each}
+                    {/each}
+                    {#each orphanReviewComments(reviewComments.byWs[ws] || [], f.path, open[f.path].parsed) as c}
+                      <div class="dl-cmt">
+                        <span class="dl-cmt-stale">{t('该行已变化')}</span>
+                        <span class="dl-cmt-t">{c.text}</span>
+                        <button class="dl-cmt-x" aria-label={t('删除评论')} onclick={() => dropReviewComment(ws, c.id)}>×</button>
+                      </div>
                     {/each}
                     {#if open[f.path].truncated}<div class="dl meta">{t('…（diff 过长，已截断）')}</div>{/if}
                   </div>
@@ -373,6 +412,7 @@
   .rv-hact:active { background: var(--hover); }
   .dl-cmt { margin: 2px 10px 2px 48px; padding: 6px 10px; border-left: 2px solid var(--coral); background: color-mix(in srgb, var(--coral) 6%, transparent); border-radius: 0 8px 8px 0; display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; }
   .dl-cmt-t { flex: 1; white-space: pre-wrap; }
+  .dl-cmt-stale { flex: none; color: var(--crit); font-size: 11.5px; }
   .dl-cmt-x { flex: none; color: var(--muted); }
   .dl-cmt-ed { margin: 2px 10px 6px 48px; }
   .dl-cmt-ed textarea { width: 100%; font-size: 13px; padding: 8px; border: 1px solid var(--divider); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }

@@ -4,6 +4,9 @@
 //   元信息 GET /api/claude/dock/meta — 工作空间相对路径（文件页跳转）+ git 归属（分支 / 是否
 //          linked worktree，供输入框上方的归属状态栏芯片）+ 能力位
 //
+// 命名说明：/api/claude/* 是历史遗留（面板先随 Claude 工作台出生），审阅面板三家共用
+// （Claude / Codex / ZCode），为兼容现有调用不另开 /api/dock/*，别把 Codex 逻辑写死进这里。
+//
 // 工作空间路径一律经 authorizeProjectPath 圈定（admin 任意本地目录、Pro 限自己空间、
 // share 走 requireCtx 直接 401），全局 Origin CSRF 闸已覆盖所有 POST。
 //
@@ -249,7 +252,7 @@ export function registerClaudeDockRoutes(router, { identify }) {
   router.on('GET', '/api/claude/review', async (req, res, url) => {
     const g = dockCtx(req, res, url.searchParams.get('ws'));
     if (!g) return;
-    const { ws } = g;
+    const { ctx, ws } = g;
     if ((await git(ws, ['rev-parse', '--is-inside-work-tree'])) == null) return json(res, 200, { git: false });
     let range;
     try {
@@ -281,7 +284,10 @@ export function registerClaudeDockRoutes(router, { identify }) {
       }
     }
     const total = files.reduce((a, f) => ({ add: a.add + (f.add || 0), del: a.del + (f.del || 0) }), { add: 0, del: 0 });
-    json(res, 200, { git: true, branch, base: range.label, scope: range.scope, sha: range.sha || null, subject: range.subject || null, files, total, truncated });
+    // readOnly：快照访客只看不写（前端据此藏掉 Git 操作按钮，后端 git 接口也要拦）。
+    // baseRef：branch 范围的解析后基线（merge-base SHA / 自动基线 / 无 merge-base 时的分支名）——
+    // 分支范围的 revert 要回到它，不是 HEAD、也不是基线分支的尖端。
+    json(res, 200, { git: true, branch, base: range.label, scope: range.scope, sha: range.sha || null, subject: range.subject || null, files, total, truncated, readOnly: ctx.kind === 'snap', ...(range.scope === 'branch' ? { baseRef: range.args[0] } : {}) });
   });
 
   // ── 审阅：最近提交（commit 范围的下拉）──────────────────────────────────────
@@ -373,13 +379,15 @@ export function registerClaudeDockRoutes(router, { identify }) {
   //   level=all：整 diff（stage-all = add -A；unstage-all = reset；revert-all = 恢复到 base + 清未跟踪）
   //   level=file：单个文件（stage = add；unstage = reset；revert = 恢复到 base，未跟踪则删除）
   //   level=hunk：单个 hunk（patch = 带文件头的独立 patch 文本；先 --check 再 apply）
-  // base 只在 branch 范围的 revert 下传（恢复到基线）；缺省 HEAD。
+  // base 只在 branch 范围的 revert 下传（恢复到基线 = 概览接口返回的 baseRef，merge-base SHA）；缺省 HEAD。
   // patch 校验：恰好一个 diff --git 块、目标路径必须等于 file，防止一份 patch 改多个文件。
+  // 快照访客（ctx.kind === 'snap'）只读：一切 POST git 操作后端直接 403，前端也藏按钮。
   router.on('POST', '/api/claude/review/git', async (req, res) => {
     let body; try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
     const g = dockCtx(req, res, body.ws);
     if (!g) return;
-    const { ws } = g;
+    const { ctx, ws } = g;
+    if (ctx.kind === 'snap') return json(res, 403, { error: '快照访客只读，无法执行 Git 操作' });
     const op = String(body.op || '');
     const level = String(body.level || '');
     if (!['stage', 'unstage', 'revert'].includes(op)) return json(res, 400, { error: '未知的操作' });

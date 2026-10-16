@@ -272,3 +272,44 @@ test('git 操作：非法输入与门禁', async () => {
     assert.equal(badSha.code, 400);
   } finally { r.done(); }
 });
+
+// 快照访客只读：GET 审阅带 readOnly，POST git 一律 403，工作树原样不动。
+test('git 操作：快照访客只读（POST git 403，工作树不动）', async () => {
+  const r = makeRepo();
+  try {
+    const before = gitStatus(r.dir);
+    assert.ok(before.includes('a.txt'), '夹具：工作树有改动');
+    const snapFor = (dir) => collect(() => ({ kind: 'snap', token: 't-snap', dir }));
+    const j = (await snapFor(r.dir)('GET', q(r.dir, '&scope=branch'))).json();
+    assert.equal(j.readOnly, true, 'snap 的审阅概览带 readOnly');
+    const jAdmin = (await admin('GET', q(r.dir, '&scope=branch'))).json();
+    assert.equal(jAdmin.readOnly, false, 'admin 不是只读');
+    const s = await snapFor(r.dir)('POST', '/api/claude/review/git', { body: { ws: r.dir, op: 'stage', level: 'all' } });
+    assert.equal(s.code, 403, s.text);
+    assert.equal(gitStatus(r.dir), before, '403 后工作树原样不动');
+    const s2 = await snapFor(r.dir)('POST', '/api/claude/review/git', { body: { ws: r.dir, op: 'revert', level: 'all' } });
+    assert.equal(s2.code, 403, s2.text);
+    assert.equal(gitStatus(r.dir), before, 'revert 也被拦下');
+  } finally { r.done(); }
+});
+
+// 分支范围的 revert 回到基线（baseRef = merge-base），不是 HEAD、不是基线分支尖端：
+// feature 在 sha2 上分支、又提交了一笔，再改工作区；revert-all(base=baseRef) 后
+// a.txt 回到 sha2 时的内容（分支提交的改动也丢），未跟踪 c.txt 也被清掉。
+test('git 操作：分支 revert 回到 baseRef（merge-base），不是 HEAD', async () => {
+  const r = makeRepo();
+  try {
+    g(r.dir, 'checkout', '-b', 'feature');
+    writeFileSync(path.join(r.dir, 'a.txt'), 'a1\na2-feature\na3\na4\na5\na6-unstaged\na7\na8\n');
+    g(r.dir, 'add', 'a.txt');
+    g(r.dir, 'commit', '-m', 'feature work');
+    writeFileSync(path.join(r.dir, 'a.txt'), 'a1\na2-feature\na3\na4\na5\na6-work\na7\na8\n');
+    const j = (await admin('GET', q(r.dir, '&scope=branch'))).json();
+    assert.ok(j.baseRef, 'branch 概览带 baseRef');
+    assert.equal(j.baseRef, g(r.dir, 'merge-base', 'HEAD', 'main').trim(), 'baseRef = merge-base(HEAD, main)');
+    const s = await admin('POST', '/api/claude/review/git', { body: { ws: r.dir, op: 'revert', level: 'all', base: j.baseRef } });
+    assert.equal(s.code, 200, s.text);
+    assert.equal(read(r.dir, 'a.txt'), g(r.dir, 'show', `${j.baseRef}:a.txt`), 'a.txt 回到基线内容');
+    assert.equal(existsSync(path.join(r.dir, 'c.txt')), false, '未跟踪 c.txt 被 revert-all 删除');
+  } finally { r.done(); }
+});

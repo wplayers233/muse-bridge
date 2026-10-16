@@ -520,8 +520,9 @@ export async function cliSend(agent, prompt, images = [], opts = {}) {
   let text = String(prompt || '');
   // 审阅面板的行内评论：随下一条消息带上（取走清空，见 reviewComments.svelte.js）。
   // key 是 agent 当前工作目录——面板写评论时用的也是这个 ws，同一工作空间才对得上。
+  // 正文为空、只有评论时消息就是评论指令块（面板“只有评论也能发”的约定）。
   const comments = takeReviewComments(cwdOf(agent));
-  if (comments.length) text = text + '\n\n' + formatReviewComments(comments);
+  if (comments.length) text = text ? text + '\n\n' + formatReviewComments(comments) : formatReviewComments(comments);
   const c = cliChat[agent];
   if (c.busy || !text.trim()) return;
   c.error = '';
