@@ -42,7 +42,8 @@ import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs, normCliPermsOverri
 import { listCliSessions, getCliSession, saveCliSession, deleteCliSession } from '../runtime/cli-sessions.mjs';
 import { cliSpawnKeyEnv, cliDataEnv, keyDirFor, setAgentKey, agentKeyState, isKeyAgent } from '../runtime/agent-keys.mjs';
 import { codexModels } from '../runtime/agent-models.mjs';
-import { codexSkills } from '../runtime/agent-skills-codex.mjs';
+import { codexSkills, codexSkillsConfigWrite } from '../runtime/agent-skills-codex.mjs';
+import { compactCodexThread } from '../runtime/agent-compact-codex.mjs';
 import { codexPermissionProfiles } from '../runtime/agent-perms-codex.mjs';
 import { readInstalledPlugins, scanCatalog, codexMcpList, codexPluginAdd, codexPluginRemove } from '../runtime/agent-plugins-codex.mjs';
 import { codexPlan } from '../runtime/agent-plan-codex.mjs';
@@ -386,6 +387,23 @@ export function registerAgentCliRoutes(router, { identify }) {
     json(res, 200, { ok: true, skills });
   });
 
+  // Codex 技能启用/停用（skills/config/write，P5.2）。
+  // 写的是全局 config.toml（[[skills.config]]，持久化），不是当次会话——界面上点选即保存。
+  // 上游对匹配不上的 name 不报错，所以服务端重拉验证：verified=false 时界面不谎称成功。
+  router.on('POST', '/api/codex/skills/config', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const name = typeof body?.name === 'string' ? body.name.trim() : '';
+    if (!name) return json(res, 400, { error: 'name 必填' });
+    const env = { ...process.env, ...cliDataEnv(ctx), ...cliSpawnKeyEnv(ctx, 'codex') };
+    const out = await codexSkillsConfigWrite({ env, cwd: getCliPrefs(ctx, 'codex').cwd, name, enabled: body?.enabled === true });
+    if (!out) return json(res, 502, { error: '写技能配置失败（上游没回有效结果）' });
+    json(res, 200, { ok: true, ...out });
+  });
+
   // —— Codex 插件 / 连接器（官方 PC 端 `codex plugin` / `codex mcp` 的桥接，「自定义」页数据面）——
   router.on('GET', '/api/codex/plugins', async (req, res) => {
     const ctx = requireCtx(identify, req, res);
@@ -462,6 +480,51 @@ export function registerAgentCliRoutes(router, { identify }) {
     } finally {
       try { res.end(); } catch {}
     }
+  });
+
+  // ── Codex 手动压缩（P5.1：thread/compact/start，SSE 流回 compact 事件）────────
+  // 压缩是改写线程上下文的操作（不是只读查询）：快照访客 403（与审阅同一口径）。
+  // 与聊天轮次不同：压缩绑在点击这次上，客户端断开即停（中止压缩，线程不受损，
+  // 下次可重压），不进后台轮次的「断开不断进程」那套。
+  // 排队竞态：刚起的轮次 sessionId 还没填进注册表，有一瞬的竞态——挡不住的那一例
+  // 会进压缩排队，60 秒没动静按「没东西可压」收尾，用户等轮次跑完重压即可。
+  router.on('POST', '/api/codex/compact', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    if (ctx.kind === 'snap') return json(res, 403, { error: '快照访客不能压缩上下文' });
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const sessionId = String(body.sessionId || '').slice(0, 200);
+    if (!sessionId) return json(res, 400, { error: '缺少 sessionId' });
+    if (!findCliBin('codex')) return json(res, 409, { error: CLI_MISSING_NOTE.codex });
+    // 同一线程上已有轮次在跑：压缩会排队，先挡 409，让用户等它跑完再压。
+    const running = listCodexTurns(codexCallerKey(ctx)).some((t) => t.sessionId === sessionId && !t.done);
+    if (running) return json(res, 409, { error: '这条会话还有一轮在跑，等它跑完再压缩' });
+
+    const prefs = getCliPrefs(ctx, 'codex');
+    let cwd = prefs.cwd;
+    if (body.cwd) {
+      try { cwd = authorizeProjectPath(ctx, body.cwd); }
+      catch (e) { return json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) }); }
+    }
+
+    const ac = new AbortController();
+    let gone = false;
+    if (typeof res.on === 'function') res.on('close', () => { if (!res.writableFinished && !gone) { gone = true; ac.abort(); } });
+
+    sseOpen(res);
+    const r = await compactCodexThread({
+      sessionId, cwd,
+      env: { ...process.env, ...cliDataEnv(ctx) },
+      keyEnv: cliSpawnKeyEnv(ctx, 'codex'),
+      signal: ac.signal,
+      onEvent: (ev) => { if (!gone) sseSend(res, ev); },
+    });
+    // compactCodexThread 的 finish 已发过 end 事件；这里只关流。
+    // （r 只是兜底：若事件没发出去，前端以流结束为准清掉「压缩中」。）
+    try { res.end(); } catch {}
+    return r;
   });
 
   // 记住选定的模型 / 思考深度。传空串 = 清掉，交回 CLI 自己的配置（~/.codex/config.toml）。

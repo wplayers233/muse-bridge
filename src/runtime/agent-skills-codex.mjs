@@ -36,7 +36,7 @@ function normSkill(s) {
   };
 }
 
-function askAppServer(bin, env, cwd, force) {
+function askAppServer(bin, env, cwd, run) {
   return new Promise((resolve) => {
     const isJs = /\.(c|m)?js$/i.test(bin);
     let child;
@@ -109,16 +109,9 @@ function askAppServer(bin, env, cwd, force) {
       });
       if (!init) return finish(null);
       try { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized', params: {} }) + '\n'); } catch {}
-      const list = await call('skills/list', { cwds: cwd ? [cwd] : [], forceReload: !!force });
-      if (!list || !Array.isArray(list.data)) return finish(null);
-      const out = [];
-      for (const g of list.data) {
-        if (!g || !Array.isArray(g.skills)) continue;
-        for (const s of g.skills) {
-          const n = normSkill(s);
-          if (n) out.push(n);
-        }
-      }
+      // run = 本次探针要做的方法序列（list 只做 skills/list；config/write 做写 + 重拉验证）。
+      let out = null;
+      try { out = await run(call); } catch { out = null; }
       finish(out);
     })();
   });
@@ -138,8 +131,57 @@ export async function codexSkills({ env = process.env, cwd = '', force = false }
   }
   const bin = findCliBin('codex', env);
   if (!bin) return null;
-  const skills = await askAppServer(bin, env, key, force);
+  const skills = await askAppServer(bin, env, key, async (call) => {
+    const list = await call('skills/list', { cwds: key ? [key] : [], forceReload: !!force });
+    if (!list || !Array.isArray(list.data)) return null;
+    const out = [];
+    for (const g of list.data) {
+      if (!g || !Array.isArray(g.skills)) continue;
+      for (const s of g.skills) {
+        const n = normSkill(s);
+        if (n) out.push(n);
+      }
+    }
+    return out;
+  });
   // 只缓存成功结果：失败不缓存（瞬时失败不应把技能区藏 5 分钟），界面「重新扫描」也能重试。
   if (Array.isArray(skills)) cache.set(key, { at: now, skills });
   return skills;
+}
+
+// 技能的启用/停用写回（skills/config/write，P5.2）。
+//
+// 探针语义（0.162.1，临时 CODEX_HOME + 临时技能，真机）：
+//   · 写的是全局 config.toml（[[skills.config]] name/enabled），不是当次会话——
+//     所以这条是持久化操作，界面上要点选即保存、不要当成临时开关。
+//   · 写完不用等：同一次探针里重拉 skills/list 已是新状态（不用 forceReload 也行，
+//     这里照样带 forceReload 求稳）。
+//   · 只用 name 选择器：path 选择器传技能目录没匹配上（回 effectiveEnabled: true
+//     却什么都没改——上游对匹配不上的选择器不报错），name 选择器才真改。
+//   · 不存在的 name 也不报错（effectiveEnabled 照回），所以必须重拉验证——
+//     验证不到目标状态就回 verified: false，界面不谎称成功。
+// 写完清掉该 cwd 的清单缓存（否则 GET /api/codex/skills 还会回 5 分钟内的旧状态）。
+export async function codexSkillsConfigWrite({ env = process.env, cwd = '', name = '', enabled = true } = {}) {
+  const key = String(cwd || '');
+  const skillName = String(name || '').trim();
+  if (!skillName) return null;
+  const bin = findCliBin('codex', env);
+  if (!bin) return null;
+  const out = await askAppServer(bin, env, key, async (call) => {
+    const w = await call('skills/config/write', { enabled: !!enabled, name: skillName });
+    if (!w || typeof w.effectiveEnabled !== 'boolean') return null;
+    const list = await call('skills/list', { cwds: key ? [key] : [], forceReload: true });
+    if (!list || !Array.isArray(list.data)) return { effectiveEnabled: w.effectiveEnabled, verified: false, skill: null };
+    let found = null;
+    for (const g of list.data) {
+      if (!g || !Array.isArray(g.skills)) continue;
+      for (const s of g.skills) {
+        if (s && s.name === skillName) { found = normSkill(s); break; }
+      }
+      if (found) break;
+    }
+    return { effectiveEnabled: w.effectiveEnabled, verified: !!(found && found.enabled === !!enabled), skill: found };
+  });
+  if (out) cache.delete(key);
+  return out;
 }

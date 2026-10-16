@@ -131,6 +131,26 @@
     } catch (e) { skillErr = (e && e.message) || String(e); }
     skillLoading = false;
   }
+  // 技能启用/停用（P5.2，skills/config/write）：点选即保存，写的是全局 config.toml
+  // （[[skills.config]]，持久化）。服务端重拉验证过才更新卡片；验证失败就重拉整页、不谎称成功。
+  let skillToggling = $state(false);
+  async function toggleSkill(s) {
+    if (skillToggling || !s?.name) return;
+    skillToggling = true;
+    try {
+      const r = await fetch(apiUrl('/api/codex/skills/config'), {
+        method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'same-origin', body: JSON.stringify({ name: s.name, enabled: !s.enabled }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || j?.error) throw new Error(j?.error || ('HTTP ' + r.status));
+      if (!j?.verified) { showToast(t('没改上，重新拉一次看看')); loadSkills(true); return; }
+      const i = skillList.findIndex((x) => x.name === s.name);
+      if (i >= 0 && j.skill) skillList[i] = { ...skillList[i], ...j.skill };
+      showToast(t('已保存'));
+    } catch (e) { showToast((e && e.message) || String(e)); }
+    skillToggling = false;
+  }
   // 切到技能页签才拉（失败后 skillErr 非空，不重复拉；成功后 skillList 非空，不重复拉）。
   // 技能变了（上游 skills/changed → cliChat 的 codexSkillsVersion +1）：已拉过就重拉。
   let loadedSkillsVersion = $state(0);
@@ -237,7 +257,8 @@
       </div>
     {/if}
   {:else if tab === 'skill'}
-    <!-- 技能（skills/list，只读）：名字 + 来源 + 描述 + SKILL.md 路径；启用/停用只展示，不在这里改。 -->
+    <!-- 技能（skills/list）：名字 + 来源 + 描述 + SKILL.md 路径；点「已启用/已停用」切换
+         （skills/config/write，写进全局 config.toml，持久化）。 -->
     {#if skillLoading}
       <div class="czp-empty">{t('加载中…')}</div>
     {:else if skillErr}
@@ -245,6 +266,7 @@
     {:else if !skillList?.length}
       <div class="czp-empty">{t('暂无技能')}</div>
     {:else}
+      <div class="czp-perms-note">{t('点卡片右上角的「已启用 / 已停用」切换，写进全局配置（持久化）。')}</div>
       <div class="czp-refresh">
         <button onclick={() => loadSkills(true)} disabled={skillLoading}>{t('重新扫描')}</button>
       </div>
@@ -260,7 +282,10 @@
                   {#if s.name && s.name !== s.displayName}<span class="kind mono">{s.name}</span>{/if}
                 </div>
               </div>
-              <span class="state" class:on={s.enabled}>{s.enabled ? t('已启用') : t('已停用')}</span>
+              <button class="state" class:on={s.enabled} disabled={skillToggling}
+                title={t('点此切换启用/停用（写进全局配置）')} onclick={() => toggleSkill(s)}>
+                {s.enabled ? t('已启用') : t('已停用')}
+              </button>
             </div>
             {#if s.description}<div class="cdesc">{s.description}</div>{/if}
             {#if s.path}<div class="cpath" title={s.path}>{s.path}</div>{/if}

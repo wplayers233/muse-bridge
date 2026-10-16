@@ -101,6 +101,12 @@ export default {
   '计划': 'Plan',
   '计划模式': 'Plan mode',
   '计划模式：只出计划，不改文件': 'Plan mode: plan only, no file changes',
+  '压缩': 'Compact',
+  '压缩中…': 'Compacting…',
+  '压缩：把当前会话的上下文压成摘要，续聊不丢关键信息': 'Compact: summarize this session’s context so the conversation can continue without losing key info',
+  '上下文已压缩': 'Context compacted',
+  '没有可压缩的内容': 'Nothing to compact',
+  '压缩失败': 'Compaction failed',
   'Codex 会话状态：系统错误': 'Codex session status: system error',
   '工具': 'Tool',
   '正在工作…': 'Working…',
@@ -233,6 +239,11 @@ export default {
   '无 profile（用沙箱）': 'No profile (use sandbox)',
   '当前 Codex 版本不支持权限档（走的是旧版回落），这一轮按默认权限跑': 'This Codex version does not support permission settings (legacy fallback) — this turn runs with default permissions',
   '当前 Codex 版本不支持计划模式（走的是旧版回落），这一轮按普通模式跑': 'This Codex version does not support plan mode (legacy fallback) — this turn runs in normal mode',
+
+  // —— Codex 技能启用/停用（P5.2：skills/config/write，写进全局 config.toml）——
+  '点卡片右上角的「已启用 / 已停用」切换，写进全局配置（持久化）。': 'Click Enabled / Disabled at the top-right of a card to toggle it — saved to the global config (persistent).',
+  '点此切换启用/停用（写进全局配置）': 'Click to toggle enabled / disabled (saved to the global config)',
+  '没改上，重新拉一次看看': 'Didn’t take — reloading the list',
 
   // —— 输入框照官方 PC 端：+ 弹层菜单 / 模型一体浮层（CliAddMenu / CliModelPicker）——
   '添加图片': 'Add image',

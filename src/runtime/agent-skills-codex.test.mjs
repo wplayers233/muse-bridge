@@ -112,3 +112,87 @@ test('codexSkills：没装 codex 回 null（不抛）', async () => {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ── P5.2：skills/config/write ──
+// 假 codex 的 enabled 状态落文件（process.env.FAKE_SKILLS_STATE，JSON）：
+// 真 codex 靠 config.toml 跨进程持久化，fake 也得文件级状态——否则写探针一死，
+// 下一次 list 探针又是初始状态，验不出「写完清缓存」。
+const FAKE_CODEX_WRITE = `
+const fs = require('node:fs');
+const readline = require('node:readline');
+const stateFile = process.env.FAKE_SKILLS_STATE || '';
+const readState = () => { try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return { 'alpha': true, 'beta': false }; } };
+const writeState = (s) => { try { fs.writeFileSync(stateFile, JSON.stringify(s)); } catch {} };
+const rl = readline.createInterface({ input: process.stdin });
+const send = (o) => { try { process.stdout.write(JSON.stringify(o) + '\\n'); } catch {} };
+rl.on('line', (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.id == null) return;
+  if (m.method === 'initialize') { send({ jsonrpc: '2.0', id: m.id, result: {} }); return; }
+  if (m.method === 'skills/config/write') {
+    const p = m.params || {};
+    const st = readState();
+    // 只认 name 选择器（照真机：path 选择器不匹配时静默不动——这里直接回
+    // effectiveEnabled 但不改状态，验「重拉验证」能抓到这种谎报）。
+    if (p.name && p.name in st) { st[p.name] = !!p.enabled; writeState(st); }
+    send({ jsonrpc: '2.0', id: m.id, result: { effectiveEnabled: !!p.enabled } });
+    return;
+  }
+  if (m.method === 'skills/list') {
+    const st = readState();
+    send({ jsonrpc: '2.0', id: m.id, result: { data: [{ cwd: '/tmp/w', skills: Object.entries(st).map(([name, en]) => ({ name, enabled: en, scope: 'user', path: '/w/' + name + '/SKILL.md' })) }] } });
+    return;
+  }
+  send({ jsonrpc: '2.0', id: m.id, result: {} });
+});
+`;
+function makeFakeWrite() {
+  const tmp = mkdtempSync(path.join(tmpdir(), 'bridge-fake-skills-write-'));
+  const binDir = path.join(tmp, 'bin');
+  const realDir = path.join(tmp, 'real');
+  mkdirSync(realDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(path.join(realDir, 'codex.js'), FAKE_CODEX_WRITE);
+  const sh = path.join(binDir, 'codex');
+  writeFileSync(sh, '#!/bin/sh\nexec ' + JSON.stringify(process.execPath) + ' ' + JSON.stringify(path.join(realDir, 'codex.js')) + ' "$@"\n');
+  chmodSync(sh, 0o755);
+  const workdir = path.join(tmp, 'work');
+  mkdirSync(workdir, { recursive: true });
+  const stateFile = path.join(tmp, 'state.json');
+  writeFileSync(stateFile, JSON.stringify({ alpha: true, beta: false }));
+  const env = { ...process.env, BRIDGE_AGENT_BIN_DIR: '', PATH: binDir + path.delimiter + (process.env.PATH || ''), FAKE_SKILLS_STATE: stateFile };
+  return { tmp, env, workdir };
+}
+
+test('codexSkillsConfigWrite：写 + 重拉验证通过；写完清清单缓存', async () => {
+  const { codexSkillsConfigWrite } = await import('./agent-skills-codex.mjs');
+  const f = makeFakeWrite();
+  try {
+    // 先拉一份进缓存（alpha=true），再写禁用——写完后重拉必须是新状态，不是缓存。
+    const before = await codexSkills({ env: f.env, cwd: f.workdir });
+    assert.equal(before.find((s) => s.name === 'alpha').enabled, true);
+    const out = await codexSkillsConfigWrite({ env: f.env, cwd: f.workdir, name: 'alpha', enabled: false });
+    assert.equal(out.effectiveEnabled, false);
+    assert.equal(out.verified, true, '重拉验证到 alpha=false');
+    assert.equal(out.skill.enabled, false);
+    const after = await codexSkills({ env: f.env, cwd: f.workdir });
+    assert.equal(after.find((s) => s.name === 'alpha').enabled, false, '缓存已清，重拉不是旧状态');
+    const back = await codexSkillsConfigWrite({ env: f.env, cwd: f.workdir, name: 'beta', enabled: true });
+    assert.equal(back.verified, true);
+  } finally {
+    rmSync(f.tmp, { recursive: true, force: true });
+  }
+});
+
+test('codexSkillsConfigWrite：不存在的 name 不谎称成功（verified=false）', async () => {
+  const { codexSkillsConfigWrite } = await import('./agent-skills-codex.mjs');
+  const f = makeFakeWrite();
+  try {
+    const out = await codexSkillsConfigWrite({ env: f.env, cwd: f.workdir, name: 'no-such-skill', enabled: false });
+    assert.equal(out.effectiveEnabled, false, '上游对不存在的 name 也回 effectiveEnabled');
+    assert.equal(out.verified, false, '重拉没找到它 = 没改上');
+    assert.equal(out.skill, null);
+  } finally {
+    rmSync(f.tmp, { recursive: true, force: true });
+  }
+});

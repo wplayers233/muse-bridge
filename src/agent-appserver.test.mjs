@@ -170,6 +170,9 @@ rl.on('line', (line) => {
     }
     n('item/started', { threadId: 'th_fake', turnId: 't1', item: { type: 'sleep', id: 's1', durationMs: 1500 } });
     n('item/completed', { threadId: 'th_fake', turnId: 't1', item: { type: 'sleep', id: 's1', durationMs: 1500 } });
+    // P5.1：自动压缩（contextCompaction）：started = 正在压，completed = 压完，各一条提示。
+    n('item/started', { threadId: 'th_fake', turnId: 't1', item: { type: 'contextCompaction', id: 'cc1' } });
+    n('item/completed', { threadId: 'th_fake', turnId: 't1', item: { type: 'contextCompaction', id: 'cc1' } });
     n('item/started', { item: { type: 'enteredReviewMode', id: 'r1', review: '检查刚写的代码' } });
     n('item/started', { item: { type: 'exitedReviewMode', id: 'r2', review: '' } });
     n('item/started', { item: { type: 'plan', id: 'p1', text: '纯文本计划快照不应出现' } });
@@ -248,6 +251,10 @@ test('runAppServerTurn：消息循环里 sleep/评审/plan/patchUpdated/terminal
     // sleep：started 给一条「暂停 N 秒」，completed 不再说。
     const pauses = kinds('notice').filter((e) => e.text.startsWith('暂停'));
     assert.deepEqual(pauses.map((e) => e.text), ['暂停 2 秒…']);
+    // 自动压缩：started 与 completed 各一条提示。
+    // （别用 includes('压缩上下文') 过滤——「上下文已压缩」里字序是反的，含不进去。）
+    const compactions = kinds('notice').filter((e) => e.text === '正在压缩上下文…' || e.text === '上下文已压缩');
+    assert.deepEqual(compactions.map((e) => e.text), ['正在压缩上下文…', '上下文已压缩']);
     // 评审模式进/出。
     assert.ok(kinds('notice').some((e) => e.text === '进入评审模式：检查刚写的代码'));
     assert.ok(kinds('notice').some((e) => e.text === '退出评审模式'));

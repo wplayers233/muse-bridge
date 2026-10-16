@@ -18,6 +18,7 @@
   import { authHeaders } from '../../lib/api.js';
   import { renderMarkdown } from '../../lib/md.js';
   import { showToast } from '../../lib/toast.svelte.js';
+  import { pump } from '../../lib/sse.js';
   import { t, tr } from '../../lib/i18n.js';
   import CliAddMenu from './CliAddMenu.svelte';
   import CliModelPicker from './CliModelPicker.svelte';
@@ -82,6 +83,37 @@
   let planMode = $state(false);
   // 权限档菜单（仅 Codex）：开合状态；菜单里改的是当轮覆盖（cliChat 的 permsOverride）。
   let permsOpen = $state(false);
+  // 手动压缩（仅 Codex，P5.1）：点「压缩」→ 服务端 thread/compact/start → SSE 流回 compact 事件。
+  // 压缩时按钮显示「压缩中…」，end 帧带结果（压上了 / 没东西可压 / 失败）；流异常结束也清状态。
+  let compacting = $state(false);
+  async function compactNow() {
+    if (compacting || !chat.sessionId) return;
+    compacting = true;
+    try {
+      const res = await fetch(apiUrl('/api/codex/compact'), {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'same-origin',
+        body: JSON.stringify({ sessionId: chat.sessionId, cwd: chat.cwd }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        showToast(j.error || t('压缩失败'), 'err');
+        return;
+      }
+      await pump(res, (ev) => {
+        if (ev && ev.type === 'compact' && ev.phase === 'end') {
+          if (ev.ok && ev.compacted) showToast(t('上下文已压缩'), 'ok');
+          else if (ev.ok) showToast(t('没有可压缩的内容'), 'ok');
+          else showToast(ev.error || t('压缩失败'), 'err');
+        }
+      });
+    } catch (e) {
+      showToast(t('压缩失败') + '：' + (e && e.message ? e.message : String(e)), 'err');
+    } finally {
+      compacting = false;
+    }
+  }
   let copied = $state('');
 
   loadCliStatus();
@@ -512,6 +544,13 @@
                 <CliPermsMenu agent="codex" onClose={() => (permsOpen = false)} />
               {/if}
             </div>
+            <!-- 手动压缩（仅 Codex）：当前会话有内容时才可点（没开会话 / 有轮次在跑时禁用）。 -->
+            <button class="plan-toggle" onclick={compactNow}
+              disabled={!ready || chat.busy || !chat.sessionId || compacting}
+              aria-label={t('压缩')}
+              title={t('压缩：把当前会话的上下文压成摘要，续聊不丢关键信息')}>
+              {compacting ? t('压缩中…') : t('压缩')}
+            </button>
             <CliModelPicker agent="codex" disabled={chat.busy || !ready} />
           {/if}
           {#if chat.busy}
