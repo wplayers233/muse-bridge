@@ -27,6 +27,9 @@ const blank = (agent) => ({
   worktree: null,   // 这一轮跑在哪个 worktree 里（worktree 事件带回；null = 不在 worktree 里）
   turnId: '',       // codex 后台轮次的 id（meta 事件带回；断线重连 / 显式停止用）
   seq: 0,
+  // 权限档当轮覆盖（P4，仅 codex）：只存显式改过的维度（{} = 不覆盖，用线程当前设置）；
+  // 切会话 / 开新会话时清掉（覆盖属于这一段会话，不跟到另一段去）。
+  permsOverride: {},
 });
 
 export const cliChat = $state({ codex: blank('codex'), zcode: blank('zcode') });
@@ -238,6 +241,23 @@ function snapshot(agent) {
 
 export const cliActiveId = (agent) => activeId[agent];
 
+// 权限档当轮覆盖（P4，仅 codex）：patch 里 value 为 null/'' = 该维度回到默认（删掉）；
+// profile 与 sandbox 互斥——设了 profile 就清 sandbox，反之亦然（后端也有一道防线）。
+export function setCliPermsOverride(agent, patch = {}) {
+  const c = cliChat[agent];
+  if (!c) return;
+  const next = { ...(c.permsOverride || {}) };
+  for (const [dim, value] of Object.entries(patch)) {
+    if (!['sandbox', 'approval', 'reviewer', 'profile'].includes(dim)) continue;
+    if (value == null || value === '') delete next[dim];
+    else next[dim] = value;
+  }
+  if (next.profile) delete next.sandbox;
+  if (next.sandbox) delete next.profile;
+  c.permsOverride = next;
+}
+export const cliPermsOverrideCount = (agent) => Object.keys(cliChat[agent]?.permsOverride || {}).length;
+
 // 开一段新会话：先把当前这段收进列表，再把 cliChat 复位（空 = 没聊过）。
 // 注意只 detach 不杀：codex 的轮次如果还在跑，会留在「后台运行中」继续跑。
 export function cliNew(agent) {
@@ -246,6 +266,7 @@ export function cliNew(agent) {
   activeId[agent] = newId();
   const c = cliChat[agent];
   c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.worktree = null; c.turnId = ''; c.seq = 0; c.title = '';
+  c.permsOverride = {};
   persist();
 }
 
@@ -280,6 +301,7 @@ export async function cliPick(agent, id) {
   c.cwd = rec.cwd || '';
   c.title = rec.title || '';
   c.error = '';
+  c.permsOverride = {};
   c.seq = c.items.reduce((n, m) => Math.max(n, m.id || 0), 0);
   persist();
 }
@@ -293,6 +315,7 @@ export function cliDrop(agent, id) {
     activeId[agent] = newId();
     const c = cliChat[agent];
     c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.worktree = null; c.seq = 0;
+    c.permsOverride = {};
   }
   persist();
   deleteRemote(agent, id);   // 服务端那条也删掉（幂等；失败时下次 sync 会带回来，再删一次即可）
@@ -554,6 +577,7 @@ export async function cliSend(agent, prompt, images = [], opts = {}) {
       // plan：Codex 计划模式开关（单条消息生效；zcode 没有这个参数，不发）。
       // cwd：会话的工作目录（worktree 会话续聊时带上，快照里存的那份；新会话不带，走服务端 prefs）。
       // worktree：新会话且勾了 worktree 勾选框时才带（后端只对无 sessionId 的请求建 worktree）。
+      // perms：Codex 权限档当轮覆盖（P4，只带改过的维度；空 = 不覆盖。zcode 没有这个概念，不发）。
       body: JSON.stringify({
         prompt: text,
         sessionId: c.sessionId || undefined,
@@ -561,6 +585,7 @@ export async function cliSend(agent, prompt, images = [], opts = {}) {
         images: imgs ? images.map((a) => ({ name: a.name, data: String(a.dataUrl || '').split(',')[1] || '' })) : undefined,
         ...(opts.plan === true ? { plan: true } : {}),
         ...(opts.worktree === true && !c.sessionId ? { worktree: true } : {}),
+        ...(agent === 'codex' && c.permsOverride && Object.keys(c.permsOverride).length ? { perms: c.permsOverride } : {}),
       }),
       credentials: 'same-origin',
       signal: ac.signal,

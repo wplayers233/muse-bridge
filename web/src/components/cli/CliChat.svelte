@@ -11,7 +11,7 @@
   //   · 深度靠背景对比与描边，不靠大阴影（§537 Elevation）。
   //
   // 状态在 lib/cliChat.svelte.js（模块级，退回主页再进来不丢；会话列表也在那儿）。
-  import { cliChat, cliSend, cliStop, cliNew, cliStatus, loadCliStatus, statusOf, answerApproval, cwdOf } from '../../lib/cliChat.svelte.js';
+  import { cliChat, cliSend, cliStop, cliNew, cliStatus, loadCliStatus, statusOf, answerApproval, cwdOf, cliPermsOverrideCount } from '../../lib/cliChat.svelte.js';
   import { cliDock, ensureCliDockMeta } from '../../lib/cliDock.svelte.js';
   import { reviewComments, dropAllReviewComments } from '../../lib/reviewComments.svelte.js';
   import { apiUrl } from '../../lib/server.js';
@@ -21,6 +21,7 @@
   import { t, tr } from '../../lib/i18n.js';
   import CliAddMenu from './CliAddMenu.svelte';
   import CliModelPicker from './CliModelPicker.svelte';
+  import CliPermsMenu from './CliPermsMenu.svelte';
 
   // agent: 'codex' | 'zcode'；placeholder：输入栏提示语（各家官方口吻，外层给）；
   // install/login/docUrl：接入卡上的命令与文档；hero：空态（外层给，含大问候）。
@@ -79,6 +80,8 @@
   // 计划模式开关（仅 Codex）：打开后这一条只出计划、不改文件；开关本身不随消息走，
   // 一直开着就是一直计划——关掉才回普通模式（单条生效是在服务端那层，见路由注释）。
   let planMode = $state(false);
+  // 权限档菜单（仅 Codex）：开合状态；菜单里改的是当轮覆盖（cliChat 的 permsOverride）。
+  let permsOpen = $state(false);
   let copied = $state('');
 
   loadCliStatus();
@@ -498,6 +501,17 @@
               title={t('计划模式：只出计划，不改文件')}>
               {t('计划模式')}
             </button>
+            <!-- 权限档菜单（仅 Codex）：改当轮覆盖（随下一条消息发）；有覆盖时按钮带点。 -->
+            <div class="perms-wrap">
+              <button class="plan-toggle" class:on={cliPermsOverrideCount(agent) > 0} onclick={() => (permsOpen = !permsOpen)}
+                disabled={!ready} aria-pressed={permsOpen} aria-label={t('权限')}
+                title={t('权限：本轮覆盖，改完随下一条消息发')}>
+                {t('权限')}{cliPermsOverrideCount(agent) > 0 ? ' •' : ''}
+              </button>
+              {#if permsOpen}
+                <CliPermsMenu agent="codex" onClose={() => (permsOpen = false)} />
+              {/if}
+            </div>
             <CliModelPicker agent="codex" disabled={chat.busy || !ready} />
           {/if}
           {#if chat.busy}
@@ -653,7 +667,8 @@
   .plan-toggle.on { background: color-mix(in srgb, var(--agent-accent, currentColor) 18%, transparent);
     border-color: color-mix(in srgb, var(--agent-accent, currentColor) 45%, transparent); font-weight: 600; }
   .plan-toggle:disabled { opacity: .35; }
-  /* worktree 勾选框（P3，照 WorkspaceChips：小方框 + worktree 字样；会话中是只读指示）。 */
+  /* 权限档菜单的定位锚点：菜单绝对定位在按钮上方（CliPermsMenu 的 .pm 以它为基准）。 */
+  .perms-wrap { position: relative; flex: none; }
   .wt-toggle { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 9px; border-radius: 999px; white-space: nowrap; color: inherit; }
   .wt-toggle:active { background: var(--hover); }
   .wt-toggle:disabled { opacity: .35; }

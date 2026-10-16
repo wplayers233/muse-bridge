@@ -25,7 +25,23 @@ import { findCliBin } from './agent-status.mjs';
 import { cliKeyEnv } from './agent-keys.mjs';
 import { codexModels } from './agent-models.mjs';
 
-// 审批类反向请求 → 界面上那张卡的 kind。
+// 权限档（P4）的白名单：与 runtime/cli-cwd.mjs 的 normCliPerms 同源（那份是存储的权威，
+// 这份是发包前的最后一道校验；两边改要一起改）。不从 cli-cwd import——
+// cli-cwd → runtime/agent-cli → 这里，import 会成环。
+const PERMS_SANDBOX = ['read-only', 'workspace-write', 'danger-full-access'];
+const PERMS_APPROVAL = ['on-request', 'never', 'untrusted'];
+const PERMS_REVIEWER = ['user', 'auto_review'];
+
+// 线程级沙箱字符串（SandboxMode）→ 当轮覆盖的对象形式（SandboxPolicy）。
+// 探针实测：turn/start 只认对象形式，传字符串会被忽略（app-server 不报错，只是不生效）。
+export function toSandboxPolicy(sandbox) {
+  switch (sandbox) {
+    case 'read-only': return { type: 'readOnly' };
+    case 'workspace-write': return { type: 'workspaceWrite' };
+    case 'danger-full-access': return { type: 'dangerFullAccess' };
+    default: return null;
+  }
+}
 const APPROVAL_METHODS = Object.freeze({
   'item/commandExecution/requestApproval': 'command',
   'item/fileChange/requestApproval': 'fileChange',
@@ -582,8 +598,33 @@ export async function* runAppServerTurn(agent, o = {}) {
     approvalPolicy = 'on-request', sandbox = 'workspace-write',
     onServerRequest = null, signal = null, env = process.env, keyEnv, binDir = '',
     planMode = false,
+    // 权限档（P4）：perms = 线程级默认值（新线程的 thread/start 用；不给 = 沿用上面那两个老参数）；
+    // turnPerms = 当轮覆盖（turn/start 用；只带被改过的维度，粘性——探针实测覆盖对后续轮次生效）。
+    // 形状 { sandbox?, approval?, reviewer?, profile? }，校验在 runtime/cli-cwd.mjs 的 normCliPerms。
+    perms = null, turnPerms = null,
   } = o;
   if (agent !== 'codex') { yield { type: 'error', message: 'app-server 这条路只给 codex 用' }; return; }
+  // 线程级默认值：perms 给了就用它（老参数只当回落，兼容旧调用方）。
+  const threadPerms = (perms && typeof perms === 'object')
+    ? {
+        sandbox: PERMS_SANDBOX.includes(perms.sandbox) ? perms.sandbox : sandbox,
+        approval: PERMS_APPROVAL.includes(perms.approval) ? perms.approval : approvalPolicy,
+        reviewer: PERMS_REVIEWER.includes(perms.reviewer) ? perms.reviewer : 'user',
+        profile: typeof perms.profile === 'string' ? perms.profile.trim().slice(0, 200) : '',
+      }
+    : { sandbox, approval: approvalPolicy, reviewer: 'user', profile: '' };
+  // 当轮覆盖：只认白名单里的值；profile 与 sandbox 互斥——profile 赢（上游混用直接 -32600，
+  // 这一轮就发不出去；界面上两者也不会同时出现，这里是最后一道防线）。
+  const turnOverride = {};
+  if (turnPerms && typeof turnPerms === 'object') {
+    if (typeof turnPerms.profile === 'string' && turnPerms.profile.trim()) {
+      turnOverride.profile = turnPerms.profile.trim().slice(0, 200);
+    } else if (PERMS_SANDBOX.includes(turnPerms.sandbox)) {
+      turnOverride.sandbox = turnPerms.sandbox;
+    }
+    if (PERMS_APPROVAL.includes(turnPerms.approval)) turnOverride.approval = turnPerms.approval;
+    if (PERMS_REVIEWER.includes(turnPerms.reviewer)) turnOverride.reviewer = turnPerms.reviewer;
+  }
   const searchEnv = binDir ? { ...env, PATH: binDir + ':' + (env.PATH || '') } : env;
   const bin = findCliBin('codex', searchEnv);
   if (!bin) { yield { type: 'error', message: '这台机器上还没装 Codex CLI' }; return; }
@@ -629,9 +670,15 @@ export async function* runAppServerTurn(agent, o = {}) {
     rpc.notify('initialized', {});
 
     // 会话：有 id 就接上（CLI 托管着历史），没有就新建。
+    // 权限档（P4）：thread/start 带线程级默认值；profile 与 sandbox 互斥——
+    // 有 profile 就不带 sandbox（上游混用直接 -32600）。
+    const thParams = { cwd: cwd || undefined, approvalPolicy: threadPerms.approval };
+    if (threadPerms.profile) thParams.permissions = threadPerms.profile;
+    else thParams.sandbox = threadPerms.sandbox;
+    if (threadPerms.reviewer && threadPerms.reviewer !== 'user') thParams.approvalsReviewer = threadPerms.reviewer;
     const th = threadId
       ? await rpc.call('thread/resume', { threadId }, 20_000)
-      : await rpc.call('thread/start', { cwd: cwd || undefined, approvalPolicy, sandbox }, 20_000);
+      : await rpc.call('thread/start', thParams, 20_000);
     const id = th && th.result && (th.result.thread?.id || th.result.threadId || (th.result.thread && th.result.thread.sessionId));
     if (!id) { yield { type: 'error', message: (threadId ? '接不上这个会话：' : '开不了会话：') + JSON.stringify((th && th.error) || '') }; return; }
     sessionId = id;
@@ -641,6 +688,16 @@ export async function* runAppServerTurn(agent, o = {}) {
     // 模型 / 思考深度：只有显式选了才覆盖（空 = 用 CLI 自己的 config.toml）。
     if (model) turnParams.model = model;
     if (effort) turnParams.effort = effort;
+    // 当轮覆盖（P4）：只带被改过的维度（界面只发改过的，见 lib/cliChat.svelte.js 的 permsOverride）；
+    // 粘性——探针实测覆盖对后续轮次生效。profile 与 sandbox 互斥，profile 赢（见上文）。
+    if (turnOverride.profile) turnParams.permissions = turnOverride.profile;
+    else if (turnOverride.sandbox) {
+      const sp = toSandboxPolicy(turnOverride.sandbox);
+      if (sp) turnParams.sandboxPolicy = sp;
+    }
+    if (turnOverride.approval) turnParams.approvalPolicy = turnOverride.approval;
+    // reviewer 显式回 'user' 也要发（线程可能正跑在 auto_review 上，不发就切不回来）。
+    if (turnOverride.reviewer) turnParams.approvalsReviewer = turnOverride.reviewer;
     // 思考摘要：不显式要，上游默认一条都不发（实测不传 = reasoning 事件 0 条），于是下面那些
     // item/reasoning/* 的处理分支永远等不到东西——界面上的「思考」是空的。官方 schema 的
     // TurnStartParams.summary 正是这个开关（auto | concise | detailed | none，说明是

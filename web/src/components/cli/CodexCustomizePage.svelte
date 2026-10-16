@@ -16,6 +16,7 @@
     { key: 'plugin', label: t('插件') },
     { key: 'connector', label: t('连接器') },
     { key: 'skill', label: t('技能') },
+    { key: 'perms', label: t('权限') },
   ];
   let tab = $state('plugin');
   let loading = $state(true);
@@ -28,6 +29,78 @@
   let skillList = $state(null);    // null = 还没拉过；[] = 拉过、真没技能
   let skillLoading = $state(false);
   let skillErr = $state('');
+  // 权限档线程级默认值（P4）：切到页签才拉；每个选项点选即保存（POST /api/codex/perms）。
+  // 只对新会话生效——已开的会话走输入栏菜单的当轮覆盖。
+  let permsDefaults = $state(null); // null = 还没拉到；拉到后是 { sandbox, approval, reviewer, profile }
+  let permsProfiles = $state(null); // null = 还没拉到 / 探针失败（那时隐藏 profile 组）
+  let permsLoading = $state(false);
+  let permsErr = $state('');
+  let permsSaving = $state(false);
+
+  const PERMS_LABEL = {
+    sandbox: { 'read-only': t('只读'), 'workspace-write': t('工作区写入'), 'danger-full-access': t('全部放开') },
+    approval: { 'on-request': t('每次询问'), never: t('从不询问'), untrusted: t('仅不受信任时询问') },
+    reviewer: { user: t('我来审批'), auto_review: t('自动审阅') },
+  };
+  const PERMS_DESC = {
+    sandbox: {
+      'read-only': t('不写文件、不跑命令'),
+      'workspace-write': t('可在工作区内写文件、跑命令'),
+      'danger-full-access': t('不拦任何操作，小心用'),
+    },
+    approval: {
+      'on-request': t('写文件、跑命令前先问你'),
+      never: t('不问，直接放行或拒绝'),
+      untrusted: t('只对不受信任的操作问'),
+    },
+    reviewer: {
+      user: t('审批卡弹回给你点'),
+      auto_review: t('子审阅员按风险框架代你批，不弹卡'),
+    },
+  };
+  const PERMS_GROUPS = [
+    { dim: 'sandbox', label: t('沙箱'), options: ['read-only', 'workspace-write', 'danger-full-access'] },
+    { dim: 'approval', label: t('审批'), options: ['on-request', 'never', 'untrusted'] },
+    { dim: 'reviewer', label: t('审批人'), options: ['user', 'auto_review'] },
+  ];
+  const DEFAULT_PERMS = { sandbox: 'workspace-write', approval: 'on-request', reviewer: 'user', profile: '' };
+
+  async function loadPerms(force = false) {
+    if (permsLoading) return;
+    permsLoading = true; permsErr = '';
+    try {
+      const [pr, pf] = await Promise.all([
+        fetch(apiUrl('/api/codex/perms'), { headers: authHeaders(), credentials: 'same-origin' }),
+        fetch(apiUrl('/api/codex/permissions/profiles' + (force ? '?refresh=1' : '')), { headers: authHeaders(), credentials: 'same-origin' }),
+      ]);
+      const j = await pr.json().catch(() => null);
+      if (!pr.ok || j?.error) throw new Error(j?.error || ('HTTP ' + pr.status));
+      permsDefaults = j.perms || { ...DEFAULT_PERMS };
+      const jf = await pf.json().catch(() => null);
+      if (pf.ok && Array.isArray(jf?.profiles)) permsProfiles = jf.profiles;
+    } catch (e) { permsErr = (e && e.message) || String(e); }
+    permsLoading = false;
+  }
+  // 点选即保存：profile 与 sandbox 互斥——选 sandbox 就清 profile；选 profile 时
+  // sandbox 存的值保留（清掉 profile 后它就是 fallback），界面上那组显示「不生效」。
+  async function savePerms(patch) {
+    if (permsSaving || !permsDefaults) return;
+    const next = { ...permsDefaults, ...patch };
+    if (patch.sandbox) next.profile = '';
+    permsSaving = true;
+    try {
+      const r = await fetch(apiUrl('/api/codex/perms'), {
+        method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'same-origin', body: JSON.stringify({ perms: next }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || j?.error) throw new Error(j?.error || ('HTTP ' + r.status));
+      permsDefaults = j.perms || next;
+      showToast(t('已保存'));
+    } catch (e) { showToast((e && e.message) || String(e)); }
+    permsSaving = false;
+  }
+  const resetPerms = () => savePerms({ ...DEFAULT_PERMS });
 
   const installedMap = $derived(new Map(installed.map((p) => [p.id, p])));
   const stateOf = (name, marketplace) => installedMap.get(`${name}@${marketplace}`);
@@ -67,6 +140,8 @@
       loadedSkillsVersion = codexSkillsVersion.v;
       loadSkills();
     }
+    // 权限页签同样懒加载（失败后 permsErr 非空，不重复拉）。
+    if (tab === 'perms' && permsDefaults === null && !permsErr) loadPerms();
   });
 
   // 技能来源：system = 内置，user = 用户自己的，project = 当前工作目录的；认不出的原样显示。
@@ -193,6 +268,55 @@
         {/each}
       </div>
     {/if}
+  {:else if tab === 'perms'}
+    <!-- 权限档线程级默认值（P4）：只对新会话生效；已开的会话走输入栏菜单的当轮覆盖。 -->
+    {#if permsLoading}
+      <div class="czp-empty">{t('加载中…')}</div>
+    {:else if permsErr}
+      <div class="czp-empty err">{tr(permsErr)}</div>
+    {:else if permsDefaults}
+      <div class="czp-perms-note">{t('新会话按这里开；已开的会话在输入栏「权限」菜单里改当轮覆盖。')}</div>
+      {#each PERMS_GROUPS as g}
+        <div class="czp-perms-group">
+          <div class="czp-perms-label">{g.label}</div>
+          {#if g.dim === 'sandbox' && permsDefaults.profile}
+            <div class="czp-perms-muted">{t('已选 profile，沙箱不生效')}</div>
+          {/if}
+          {#each g.options as opt}
+            <button class="czp-perms-row" class:on={permsDefaults[g.dim] === opt}
+              disabled={permsSaving || (g.dim === 'sandbox' && !!permsDefaults.profile)}
+              onclick={() => savePerms({ [g.dim]: opt })}>
+              <span class="czp-perms-check">{permsDefaults[g.dim] === opt ? '✓' : ''}</span>
+              <span class="czp-perms-name">{PERMS_LABEL[g.dim][opt]}</span>
+              <span class="czp-perms-desc">{PERMS_DESC[g.dim][opt]}</span>
+            </button>
+          {/each}
+        </div>
+      {/each}
+      {#if permsProfiles !== null}
+        <div class="czp-perms-group">
+          <div class="czp-perms-label">{t('权限 profile')}</div>
+          <div class="czp-perms-note">{t('选了 profile，沙箱就不生效')}</div>
+          <button class="czp-perms-row" class:on={!permsDefaults.profile}
+            disabled={permsSaving} onclick={() => savePerms({ profile: '' })}>
+            <span class="czp-perms-check">{!permsDefaults.profile ? '✓' : ''}</span>
+            <span class="czp-perms-name">{t('无 profile（用沙箱）')}</span>
+          </button>
+          {#each permsProfiles as p}
+            <button class="czp-perms-row" class:on={permsDefaults.profile === p.id}
+              disabled={permsSaving} onclick={() => savePerms({ profile: p.id })}>
+              <span class="czp-perms-check">{permsDefaults.profile === p.id ? '✓' : ''}</span>
+              <span class="czp-perms-name">{p.id}</span>
+              {#if p.description}<span class="czp-perms-desc">{p.description}</span>{/if}
+            </button>
+          {/each}
+          {#if !permsProfiles.length}<div class="czp-empty">{t('暂无可用 profile')}</div>{/if}
+        </div>
+      {/if}
+      <div class="czp-perms-foot">
+        <button class="act" disabled={permsSaving} onclick={resetPerms}>{t('恢复默认')}</button>
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -239,4 +363,17 @@
   .cdesc { font-size: 12.5px; line-height: 1.6; opacity: .75; }
   .cpath { font-size: 11px; font-family: var(--mono, ui-monospace, monospace); opacity: .5;
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* 权限页签（P4）：四组单选 + 恢复默认，照菜单的文案（沙箱/审批/审批人/profile）。 */
+  .czp-perms-note { max-width: 1080px; margin: 0 auto 14px; font-size: 12.5px; opacity: .6; line-height: 1.5; }
+  .czp-perms-group { max-width: 1080px; margin: 0 auto 16px; border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent); padding-top: 10px; }
+  .czp-perms-label { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .czp-perms-muted { font-size: 12.5px; opacity: .55; margin-bottom: 6px; }
+  .czp-perms-row { width: 100%; display: flex; align-items: baseline; gap: 8px; padding: 8px 10px; border-radius: 10px; text-align: left; }
+  @media (hover: hover) { .czp-perms-row:hover { background: color-mix(in srgb, currentColor 6%, transparent); } }
+  .czp-perms-row:disabled { opacity: .4; }
+  .czp-perms-row.on { background: color-mix(in srgb, currentColor 7%, transparent); }
+  .czp-perms-check { width: 14px; flex: none; font-size: 12px; }
+  .czp-perms-name { font-size: 14px; white-space: nowrap; }
+  .czp-perms-desc { font-size: 12px; opacity: .55; margin-left: auto; text-align: right; }
+  .czp-perms-foot { max-width: 1080px; margin: 4px auto 0; display: flex; justify-content: flex-end; }
 </style>

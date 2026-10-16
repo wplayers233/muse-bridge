@@ -18,6 +18,7 @@ import {
 } from './gen.mjs';
 import { runAppServerTurn, appServerAvailable } from './agent-appserver.mjs';
 import { runCliTurn } from './agent-cli.mjs';
+import { isDefaultPerms } from './cli-cwd.mjs';
 import { saveCliSession, listCliSessions, deleteCliSession } from './cli-sessions.mjs';
 
 // ── 取值（理由见各处注释） ──────────────────────────────────────────────────
@@ -135,6 +136,9 @@ export async function startCodexTurn({
   key, dataDir, prompt, sessionId = '', images = [], cwd = '',
   model = '', effort = '', env = process.env, keyEnv, binDir = '',
   plan = false, worktree = null,
+  // 权限档（P4）：perms = 线程级默认值（新线程的 thread/start 用，来自 prefs）；
+  // turnPerms = 当轮覆盖（只带改过的维度）。exec 回落时都用不上（见 pumpTurn 的提示）。
+  perms = null, turnPerms = null,
 }) {
   const turn = {
     agent: 'codex',
@@ -182,7 +186,7 @@ export async function startCodexTurn({
   // 后台 pump：跟请求解绑，客户端断不断都不影响它。异常自己吞掉走收尾，
   // 不能让未处理的 rejection 把进程带崩。
   // binDir 只给测试用（钉住 fake codex 桩）；生产调用不传。
-  pumpTurn(turn, { prompt, images, env, keyEnv, binDir, plan: !!plan }).catch(() => {});
+  pumpTurn(turn, { prompt, images, env, keyEnv, binDir, plan: !!plan, perms, turnPerms }).catch(() => {});
   return { ok: true, turn };
 }
 
@@ -207,7 +211,7 @@ export function stopCodexTurn(key, turnId) {
 }
 
 // ── 后台 pump：把选出来的 generator 的事件全部写进 turn 缓冲 ────────────────
-async function pumpTurn(turn, { prompt, images, env, keyEnv, binDir = '', plan = false }) {
+async function pumpTurn(turn, { prompt, images, env, keyEnv, binDir = '', plan = false, perms = null, turnPerms = null }) {
   const opts = {
     prompt: String(prompt || ''),
     cwd: turn.cwd,
@@ -218,10 +222,16 @@ async function pumpTurn(turn, { prompt, images, env, keyEnv, binDir = '', plan =
     env,
     keyEnv,
     binDir,
+    perms, turnPerms,
   };
   // 计划模式是 app-server 协议的能力：老版本走 exec 回落时没这个字段，
   // 别静默当普通轮跑了——先给一句提示，用户才知道这轮没进计划。
   if (plan && !turn.useAppServer) turnEmit(turn, { type: 'notice', text: '当前 Codex 版本不支持计划模式（走的是旧版回落），这一轮按普通模式跑' });
+  // 权限档也是 app-server 协议的能力：exec 回落没有对应字段，非默认设置会静默失效，
+  // 同样先给一句提示（默认设置不提示——那是本来就有的行为）。
+  if (!turn.useAppServer && (!isDefaultPerms(perms) || !isDefaultPerms(turnPerms))) {
+    turnEmit(turn, { type: 'notice', text: '当前 Codex 版本不支持权限档（走的是旧版回落），这一轮按默认权限跑' });
+  }
   const stream = turn.useAppServer
     ? runAppServerTurn('codex', {
       ...opts,

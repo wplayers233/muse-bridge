@@ -38,11 +38,12 @@ import {
 } from '../runtime/codex-turns.mjs';
 import { runCodexReview, normReviewTarget } from '../runtime/agent-appserver.mjs';
 import { authorizeProjectPath } from '../claude-projects.mjs';
-import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs } from '../runtime/cli-cwd.mjs';
+import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs, normCliPermsOverride } from '../runtime/cli-cwd.mjs';
 import { listCliSessions, getCliSession, saveCliSession, deleteCliSession } from '../runtime/cli-sessions.mjs';
 import { cliSpawnKeyEnv, cliDataEnv, keyDirFor, setAgentKey, agentKeyState, isKeyAgent } from '../runtime/agent-keys.mjs';
 import { codexModels } from '../runtime/agent-models.mjs';
 import { codexSkills } from '../runtime/agent-skills-codex.mjs';
+import { codexPermissionProfiles } from '../runtime/agent-perms-codex.mjs';
 import { readInstalledPlugins, scanCatalog, codexMcpList, codexPluginAdd, codexPluginRemove } from '../runtime/agent-plugins-codex.mjs';
 import { codexPlan } from '../runtime/agent-plan-codex.mjs';
 import { zcodePlan } from '../runtime/agent-plan-zcode.mjs';
@@ -113,7 +114,7 @@ const sseSend = (res, ev) => { try { res.write('data: ' + JSON.stringify(ev) + '
 // 跟原来（zcode 现在还是）的区别只有一点：这一轮的生命周期跟 HTTP 请求解绑。
 // res 断开只退订，不断进程；turn 在后台继续跑，回来调 /api/codex/turns/attach 接上。
 // 选路（app-server / exec 回落）、审批等待、事件缓冲全在 runtime/codex-turns.mjs 里。
-async function codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan, worktree }) {
+async function codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan, worktree, perms }) {
   // env/keyEnv：每身份注入——user 用自己的 key（<dataDir>/agents）+ 自己的 CLI 数据目录
   // （CODEX_HOME，见 runtime/agent-keys.mjs）；admin 不设目录 = 继承宿主。
   const spawnEnv = { ...process.env, ...cliDataEnv(ctx) };
@@ -122,6 +123,9 @@ async function codexChatHandler(req, res, ctx, { prompt, sessionId, images, pref
     key: codexCallerKey(ctx), dataDir: ctx.dataDir, prompt, sessionId, images, cwd,
     model: prefs.model, effort: prefs.effort, env: spawnEnv, keyEnv, plan: plan === true,
     worktree: worktree || null,
+    // 权限档（P4）：perms = 线程级默认值（prefs 里的，来「自定义」页）；turnPerms = 当轮覆盖
+    // （前端的 permsOverride，只带改过的维度；空对象 = 不覆盖）。
+    perms: prefs.perms || null, turnPerms: (perms && Object.keys(perms).length) ? perms : null,
   });
   if (!r.ok) return json(res, 409, { error: r.error });
   // 挂上 SSE：先 replay 已缓冲的，再转实时。断开只退订（attachCodexTurn 内部处理），
@@ -251,7 +255,7 @@ export function registerAgentCliRoutes(router, { identify }) {
       if (agent === 'codex') {
         // 计划模式是单条消息的开关（前端输入框的「计划模式」胶囊），不进 prefs 存量：
         // 只给这一条用，下一条默认回普通模式。
-        return codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan: body.plan === true, worktree });
+        return codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan: body.plan === true, worktree, perms: normCliPermsOverride(body.perms) });
       }
       const ac = new AbortController();
       let gone = false;
@@ -473,6 +477,42 @@ export function registerAgentCliRoutes(router, { identify }) {
     } catch (e) {
       json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) });
     }
+  });
+
+  // —— Codex 权限档（P4）：线程级默认值 + 具名 profile 清单 ——
+  // GET /api/codex/perms → { ok, perms }（「自定义」页「权限」页签与输入栏菜单的默认值面）。
+  router.on('GET', '/api/codex/perms', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    json(res, 200, { ok: true, perms: getCliPrefs(ctx, 'codex').perms });
+  });
+  // POST /api/codex/perms { perms } → 存线程级默认值（只对新会话生效；已开的会话走
+  // 输入栏菜单的当轮覆盖）。校验在 runtime/cli-cwd.mjs 的 normCliPerms（白名单 + profile 截长）。
+  router.on('POST', '/api/codex/perms', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    try {
+      const prefs = setCliAgentPrefs(ctx, 'codex', { perms: body && body.perms });
+      json(res, 200, { ok: true, perms: prefs.perms });
+    } catch (e) {
+      json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) });
+    }
+  });
+  // Codex 权限 profile 清单（官方 app-server 的 permissionProfile/list，只读）。
+  // 失败回 profiles: null（调用方隐藏 profile 选择区），成功回数组（可为空 = 真没 profile）。
+  router.on('GET', '/api/codex/permissions/profiles', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    let force = false;
+    try { force = new URL(req.url, 'http://x').searchParams.get('refresh') === '1'; } catch {}
+    const env = { ...process.env, ...cliDataEnv(ctx), ...cliSpawnKeyEnv(ctx, 'codex') };
+    const profiles = await codexPermissionProfiles({ env, cwd: getCliPrefs(ctx, 'codex').cwd, force });
+    json(res, 200, { ok: true, profiles });
   });
 
   // ── 会话注册表（跨设备同步侧栏与续聊凭据；存储见 runtime/cli-sessions.mjs） ──────

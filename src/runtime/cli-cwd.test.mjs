@@ -104,3 +104,33 @@ test('老存储形状（裸字符串 = 只有 cwd）照旧读得出来，写回�
   assert.equal(getCliCwd(legacy, 'codex'), picked, '升级形状不该把用户选的目录冲掉');
   assert.equal(getCliPrefs(legacy, 'codex').model, 'm');
 });
+
+test('权限档默认值 = 当前行为；落盘、读回来还是它；只改一个键时其余留着', () => {
+  const u = { kind: 'admin', cwd: mkdtempSync(path.join(os.tmpdir(), 'bridge-clicwd-perms-')), dataDir: '' };
+  u.dataDir = path.join(u.cwd, '.bridge');
+  const p = getCliPrefs(u, 'codex');
+  assert.deepEqual(p.perms, { sandbox: 'workspace-write', approval: 'on-request', reviewer: 'user', profile: '' });
+
+  setCliAgentPrefs(u, 'codex', { perms: { sandbox: 'read-only', reviewer: 'auto_review' } });
+  const p2 = getCliPrefs(u, 'codex');
+  assert.equal(p2.perms.sandbox, 'read-only');
+  assert.equal(p2.perms.reviewer, 'auto_review');
+  assert.equal(p2.perms.approval, 'on-request', '没改的维度留着');
+  assert.equal(p2.perms.profile, '', '没改的维度留着');
+
+  setCliAgentPrefs(u, 'codex', { perms: { profile: ':read-only' } });
+  const p3 = getCliPrefs(u, 'codex');
+  assert.equal(p3.perms.profile, ':read-only');
+  assert.equal(p3.perms.sandbox, 'read-only', '改 profile 不该顺手清 sandbox（运行时 profile 优先）');
+});
+
+test('权限档校验：白名单外的值回默认值；profile 只做 trim + 截长', () => {
+  const u = { kind: 'admin', cwd: mkdtempSync(path.join(os.tmpdir(), 'bridge-clicwd-perms2-')), dataDir: '' };
+  u.dataDir = path.join(u.cwd, '.bridge');
+  setCliAgentPrefs(u, 'codex', { perms: { sandbox: 'nope', approval: 'nope', reviewer: 'guardian_subagent', profile: '  :workspace  ' } });
+  const p = getCliPrefs(u, 'codex').perms;
+  assert.equal(p.sandbox, 'workspace-write', '非法 sandbox 回默认');
+  assert.equal(p.approval, 'on-request', '非法 approval 回默认');
+  assert.equal(p.reviewer, 'user', 'legacy 的 guardian_subagent 不提供，回默认');
+  assert.equal(p.profile, ':workspace', 'profile 只 trim，不认名单（名单由 probe 给）');
+});
