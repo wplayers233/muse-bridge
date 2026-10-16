@@ -240,7 +240,10 @@ async function pumpTurn(turn, { prompt, images, env, keyEnv, binDir = '', plan =
         turn.status = 'running';
       }
       // 新开的会话号在这里才知道（thread.started），记下来供续聊与快照。
-      if (ev.type === 'session' && ev.sessionId && !turn.sessionId) turn.sessionId = String(ev.sessionId);
+      // app-server 路发的是 'start'（agent-appserver.mjs），exec 回落发的是 'session'
+      // （agent-cli.mjs）——两边都是「会话建好了」，都要认；只认 'session' 的话
+      // app-server 路的 turn.sessionId 永远是空，后台快照存不上会话号、续聊断线。
+      if ((ev.type === 'session' || ev.type === 'start') && ev.sessionId && !turn.sessionId) turn.sessionId = String(ev.sessionId);
       // 显式停掉的轮保持 'stopped'（stopTurn 置的），别被后面的 done 盖成 'done'。
       if (ev.type === 'done' && turn.status !== 'stopped') turn.status = ev.failed ? 'failed' : 'done';
       turnEmit(turn, ev);

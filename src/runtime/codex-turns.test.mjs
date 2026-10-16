@@ -18,6 +18,7 @@ import {
   startCodexTurn, stopCodexTurn, attachCodexTurn,
   listCodexTurns, findCodexTurn, answerCodexApproval, turnWaitApproval,
 } from './codex-turns.mjs';
+import { resetAppServerProbe } from './agent-appserver.mjs';
 
 // ── fake codex 桩 ─────────────────────────────────────────────────────────
 // 无扩展名 sh（Linux 上 findCliBin 只认无扩展名，见 agent-appserver.test.mjs 的注释）。
@@ -237,4 +238,60 @@ test('同会话顶掉：新一轮取代旧轮', async (t) => {
   });
   const notes = r1.turn.events.filter((e) => e.type === 'notice').map((e) => e.text).join('|');
   assert.match(notes, /被同一会话的新一轮取代/);
+});
+
+// ── app-server 路：新会话号从 start 事件记到 turn.sessionId ───────────────────
+// 之前 pump 只认 'session'，app-server 路发的是 'start'（agent-appserver.mjs），
+// 结果 turn.sessionId 永远是空、后台快照存不上会话号。假桩走完整 app-server 握手：
+// initialize → thread/start 返回新会话号 → turn/start 后发 started/completed。
+const FAKE_APP_SERVER = `
+const readline = require('node:readline');
+const rl = readline.createInterface({ input: process.stdin });
+const send = (o) => { try { console.log(JSON.stringify(o)); } catch {} };
+rl.on('line', (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.id == null) return;
+  if (m.method === 'initialize') { send({ jsonrpc: '2.0', id: m.id, result: { model: 'fake' } }); return; }
+  if (m.method === 'thread/start') { send({ jsonrpc: '2.0', id: m.id, result: { thread: { id: 'th_newsession' } } }); return; }
+  if (m.method === 'turn/start') {
+    send({ jsonrpc: '2.0', id: m.id, result: { turn: { id: 't1' } } });
+    const n = (method, params) => send({ jsonrpc: '2.0', method, params });
+    n('turn/started', { threadId: 'th_newsession', turnId: 't1' });
+    n('turn/completed', { threadId: 'th_newsession', turnId: 't1', turn: { status: 'completed' } });
+    return;
+  }
+  send({ jsonrpc: '2.0', id: m.id, result: {} });
+});
+`;
+
+test('app-server 路：新会话号从 start 事件记到 turn.sessionId', async (t) => {
+  // 探测缓存会把选路钉住：前后都要清，否则前面的 exec 用例（缓存 false）会让本用例
+  // 走 exec，本用例的缓存 true 会让后面的 exec 用例走 app-server。
+  resetAppServerProbe();
+  t.after(() => resetAppServerProbe());
+  const tmp = mkdtempSync(path.join(tmpdir(), 'bridge-codex-appserver-'));
+  const binDir = path.join(tmp, 'bin');
+  const realDir = path.join(tmp, 'real');
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(realDir, { recursive: true });
+  const js = path.join(realDir, 'codex.js');
+  writeFileSync(js, FAKE_APP_SERVER);
+  const sh = path.join(binDir, 'codex');
+  writeFileSync(sh, '#!/bin/sh\nexec ' + JSON.stringify(process.execPath) + ' ' + JSON.stringify(js) + ' "$@"\n');
+  chmodSync(sh, 0o755);
+  const env = { ...process.env, BRIDGE_AGENT_BIN_DIR: '', PATH: binDir + path.delimiter + (process.env.PATH || '') };
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const key = 'codex:test-start-' + (++keySeq) + '-' + Date.now().toString(36);
+  const r = await startCodexTurn({
+    key, dataDir: '', prompt: '测试问题', sessionId: '',
+    env, keyEnv: {}, binDir,
+  });
+  assert.equal(r.ok, true, '开轮应该成功');
+  const turn = r.turn;
+  t.after(async () => {
+    try { stopCodexTurn(key, turn.turnId); } catch {}
+    await new Promise((r2) => setTimeout(r2, 300));
+  });
+  await waitFor(() => turn.done, 15000, 'turn 跑完');
+  assert.equal(turn.sessionId, 'th_newsession', '新会话号应从 start 事件记下来');
 });
