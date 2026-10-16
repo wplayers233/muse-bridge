@@ -11,6 +11,7 @@ export default {
   '推荐': 'Recommended',
   '已启用优先': 'Enabled first',
   '已停用': 'Disabled',
+  '暂无技能': 'No skills yet',
   '待配置': 'Needs setup',
   '需要配置': 'Needs setup',
   '上传技能…': 'Upload skill…',

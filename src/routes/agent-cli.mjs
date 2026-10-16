@@ -40,6 +40,7 @@ import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs } from '../runtime/
 import { listCliSessions, getCliSession, saveCliSession, deleteCliSession } from '../runtime/cli-sessions.mjs';
 import { cliSpawnKeyEnv, cliDataEnv, keyDirFor, setAgentKey, agentKeyState, isKeyAgent } from '../runtime/agent-keys.mjs';
 import { codexModels } from '../runtime/agent-models.mjs';
+import { codexSkills } from '../runtime/agent-skills-codex.mjs';
 import { readInstalledPlugins, scanCatalog, codexMcpList, codexPluginAdd, codexPluginRemove } from '../runtime/agent-plugins-codex.mjs';
 import { codexPlan } from '../runtime/agent-plan-codex.mjs';
 import { zcodePlan } from '../runtime/agent-plan-zcode.mjs';
@@ -340,6 +341,19 @@ export function registerAgentCliRoutes(router, { identify }) {
       store: { path: path.join(ctx.dataDir || '.', 'codex-models-union.json') },
     });
     json(res, 200, { ok: true, models });
+  });
+
+  // Codex 技能清单（官方 app-server 的 skills/list，只读；「自定义」页「技能」页签的数据面）。
+  // 失败回 skills: null（调用方隐藏技能区），成功回数组（可为空 = 真没技能）。
+  router.on('GET', '/api/codex/skills', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    let force = false;
+    try { force = new URL(req.url, 'http://x').searchParams.get('refresh') === '1'; } catch {}
+    const env = { ...process.env, ...cliDataEnv(ctx), ...cliSpawnKeyEnv(ctx, 'codex') };
+    const skills = await codexSkills({ env, cwd: getCliPrefs(ctx, 'codex').cwd, force });
+    json(res, 200, { ok: true, skills });
   });
 
   // —— Codex 插件 / 连接器（官方 PC 端 `codex plugin` / `codex mcp` 的桥接，「自定义」页数据面）——

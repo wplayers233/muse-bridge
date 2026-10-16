@@ -14,6 +14,7 @@
   const TABS = [
     { key: 'plugin', label: t('插件') },
     { key: 'connector', label: t('连接器') },
+    { key: 'skill', label: t('技能') },
   ];
   let tab = $state('plugin');
   let loading = $state(true);
@@ -22,6 +23,10 @@
   let installed = $state([]);      // [{id, name, marketplace, enabled}]
   let mcp = $state([]);            // codex mcp list --json 原样
   let busyId = $state('');
+  // 技能（skills/list，只读）：切到页签才懒加载，不点不花一次探针进程。
+  let skillList = $state(null);    // null = 还没拉过；[] = 拉过、真没技能
+  let skillLoading = $state(false);
+  let skillErr = $state('');
 
   const installedMap = $derived(new Map(installed.map((p) => [p.id, p])));
   const stateOf = (name, marketplace) => installedMap.get(`${name}@${marketplace}`);
@@ -38,6 +43,25 @@
     loading = false;
   }
   onMount(load);
+
+  // 技能清单：GET /api/codex/skills（服务端调官方 skills/list，只读）。
+  // force = 界面「重新扫描」：绕过服务端缓存并让上游重扫磁盘（刚装了技能时用）。
+  async function loadSkills(force = false) {
+    if (skillLoading) return;
+    skillLoading = true; skillErr = '';
+    try {
+      const r = await fetch(apiUrl('/api/codex/skills' + (force ? '?refresh=1' : '')), { headers: authHeaders(), credentials: 'same-origin' });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || j?.error) throw new Error(j?.error || ('HTTP ' + r.status));
+      skillList = Array.isArray(j?.skills) ? j.skills : [];
+    } catch (e) { skillErr = (e && e.message) || String(e); }
+    skillLoading = false;
+  }
+  // 切到技能页签才拉（失败后 skillErr 非空，不重复拉；成功后 skillList 非空，不重复拉）。
+  $effect(() => { if (tab === 'skill' && skillList === null && !skillErr) loadSkills(); });
+
+  // 技能来源：system = 内置，user = 用户自己的，project = 当前工作目录的；认不出的原样显示。
+  const scopeLabel = (s) => s === 'system' ? t('系统') : s === 'user' ? t('用户') : s === 'project' ? t('项目') : String(s || '');
 
   async function mutate(kind, name, marketplace) {
     const id = `${name}@${marketplace}`;
@@ -71,12 +95,12 @@
     {/each}
   </div>
 
-  {#if loading}
-    <div class="czp-empty">{t('加载中…')}</div>
-  {:else if err}
-    <div class="czp-empty err">{tr(err)}</div>
-  {:else if tab === 'plugin'}
-    {#if !catalog.length}
+  {#if tab === 'plugin'}
+    {#if loading}
+      <div class="czp-empty">{t('加载中…')}</div>
+    {:else if err}
+      <div class="czp-empty err">{tr(err)}</div>
+    {:else if !catalog.length}
       <div class="czp-empty">{t('插件目录是空的')}</div>
     {:else}
       <div class="czp-grid">
@@ -105,8 +129,12 @@
         {/each}
       </div>
     {/if}
-  {:else}
-    {#if !mcp.length}
+  {:else if tab === 'connector'}
+    {#if loading}
+      <div class="czp-empty">{t('加载中…')}</div>
+    {:else if err}
+      <div class="czp-empty err">{tr(err)}</div>
+    {:else if !mcp.length}
       <div class="czp-empty">{t('还没有连接器')}</div>
     {:else}
       <div class="czp-grid">
@@ -120,6 +148,38 @@
               </div>
               <span class="state" class:on={s.enabled}>{s.enabled ? t('已启用') : t('未安装')}</span>
             </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  {:else if tab === 'skill'}
+    <!-- 技能（skills/list，只读）：名字 + 来源 + 描述 + SKILL.md 路径；启用/停用只展示，不在这里改。 -->
+    {#if skillLoading}
+      <div class="czp-empty">{t('加载中…')}</div>
+    {:else if skillErr}
+      <div class="czp-empty err">{tr(skillErr)}</div>
+    {:else if !skillList?.length}
+      <div class="czp-empty">{t('暂无技能')}</div>
+    {:else}
+      <div class="czp-refresh">
+        <button onclick={() => loadSkills(true)} disabled={skillLoading}>{t('重新扫描')}</button>
+      </div>
+      <div class="czp-grid">
+        {#each skillList as s (s.path || s.name)}
+          <div class="card">
+            <div class="card-top">
+              <span class="glyph" aria-hidden="true">&#xe0c9;</span>
+              <div class="meta">
+                <div class="cname">{s.displayName || s.name}</div>
+                <div class="kinds">
+                  <span class="kind">{scopeLabel(s.scope)}</span>
+                  {#if s.name && s.name !== s.displayName}<span class="kind mono">{s.name}</span>{/if}
+                </div>
+              </div>
+              <span class="state" class:on={s.enabled}>{s.enabled ? t('已启用') : t('已停用')}</span>
+            </div>
+            {#if s.description}<div class="cdesc">{s.description}</div>{/if}
+            {#if s.path}<div class="cpath" title={s.path}>{s.path}</div>{/if}
           </div>
         {/each}
       </div>
@@ -161,4 +221,13 @@
   .act:disabled { opacity: .45; }
   .czp-empty { max-width: 1080px; margin: 24px auto; text-align: center; font-size: 13px; opacity: .55; }
   .czp-empty.err { color: var(--danger, #c0392b); opacity: 1; }
+  /* 技能页签的「重新扫描」：右对齐小按钮（绕过缓存、让上游重扫磁盘）。 */
+  .czp-refresh { max-width: 1080px; margin: 0 auto 10px; display: flex; justify-content: flex-end; }
+  .czp-refresh button { font-size: 12px; padding: 5px 12px; border-radius: 8px; color: inherit;
+    border: 1px solid color-mix(in srgb, currentColor 20%, transparent); }
+  .czp-refresh button:disabled { opacity: .45; }
+  /* 技能卡的描述与 SKILL.md 路径（路径超长截断，title 悬停看全路径）。 */
+  .cdesc { font-size: 12.5px; line-height: 1.6; opacity: .75; }
+  .cpath { font-size: 11px; font-family: var(--mono, ui-monospace, monospace); opacity: .5;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 </style>
