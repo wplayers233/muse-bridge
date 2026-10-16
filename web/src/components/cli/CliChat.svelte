@@ -325,6 +325,10 @@
                   {#if tl.exitCode != null && tl.exitCode !== 0}<span class="tcode">{t('退出码 {n}', { n: tl.exitCode })}</span>{/if}
                   {#if hasDetail(tl)}<span class="tcaret">{tl.open ? '▾' : '▸'}</span>{/if}
                 </button>
+                {#if tl.progress}
+                  <!-- 长 MCP 调用的实时进度（item/mcpToolCall/progress，P4）：工具行下方弱字一行。 -->
+                  <div class="tprogress">{tl.progress}</div>
+                {/if}
                 {#if tl.open}
                   <div class="tdetail">
                     {#if tl.query}<div class="dlabel">{t('搜索')}</div><div class="dtext">{tl.query}</div>{/if}
@@ -540,6 +544,8 @@
   .tname { min-width: 0; word-break: break-word; }
   .tcode { flex: none; color: var(--danger, #c0392b); opacity: .9; }
   .tcaret { flex: none; font-size: 10px; opacity: .7; }
+  /* MCP 工具的实时进度（P4）：弱字一行，与工具行细节同缩进。 */
+  .tprogress { font-size: 12px; color: var(--faint, #8a8a86); margin: -2px 0 2px 18px; }
 
   /* 工具行的细节块：输出 / 入参 / 改动文件（深一层底，不靠阴影——官方 §537） */
   .tdetail { display: flex; flex-direction: column; gap: 4px; margin: 0 0 4px 18px; }

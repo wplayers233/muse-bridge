@@ -175,6 +175,24 @@ rl.on('line', (line) => {
     n('item/started', { item: { type: 'plan', id: 'p1', text: '纯文本计划快照不应出现' } });
     n('item/fileChange/patchUpdated', { threadId: 'th_fake', turnId: 't1', itemId: 'fc1', changes: [{ path: 'src/a.js', kind: 'update', diff: '@@ -1 +1 @@' }] });
     n('item/commandExecution/terminalInteraction', { threadId: 'th_fake', turnId: 't1', itemId: 'ce1', processId: 'p9', stdin: 'Continue? [y/N]' });
+    // P4：之前被丢掉的通知（形状按本机 codex 0.149.0 的 ServerNotification.json）。
+    n('configWarning', { summary: '配置警告摘要', details: '详情' });
+    n('warning', { message: '通用警告' });
+    n('guardianWarning', { message: '守护警告', threadId: 'th_fake' });
+    n('deprecationNotice', { summary: '某功能已废弃', details: '请迁移' });
+    n('model/rerouted', { fromModel: 'gpt-5.6-terra', toModel: 'gpt-5.6', reason: 'highRiskCyberActivity', threadId: 'th_fake', turnId: 't1' });
+    n('mcpServer/startupStatus/updated', { name: 'mcp-a', status: 'failed', error: '连不上', failureReason: null, threadId: null });
+    n('mcpServer/startupStatus/updated', { name: 'mcp-b', status: 'ready', error: null, failureReason: null, threadId: null });
+    n('thread/name/updated', { threadId: 'th_fake', threadName: '自动命名标题' });
+    n('turn/diff/updated', { diff: 'diff --git a/x b/x', threadId: 'th_fake', turnId: 't1' });
+    n('project/changed', { changeType: 'updated', projectId: 'p1' });
+    n('skills/changed', {});
+    n('item/mcpToolCall/progress', { itemId: 'mcp1', message: '正在查…', threadId: 'th_fake', turnId: 't1' });
+    n('thread/settings/updated', { threadId: 'th_fake', threadSettings: { model: 'gpt-5.6-terra', effort: 'high' } });
+    n('thread/status/changed', { threadId: 'th_fake', status: { type: 'active', activeFlags: ['waitingOnApproval'] } });
+    n('remoteControl/status/changed', { installationId: 'i1', serverName: 'htch-runtime', status: 'connected', environmentId: null });
+    n('account/rateLimits/updated', { rateLimits: {} });
+    n('account/updated', { planType: 'plus', authMode: 'chatgpt' });
     n('turn/completed', { threadId: 'th_fake', turnId: 't1', turn: { status: 'completed' } });
     return;
   }
@@ -269,6 +287,33 @@ test('runAppServerTurn：不带 planMode 时 turn/start 不带 collaborationMode
     const params = JSON.parse(readFileSync(capture, 'utf8'));
     assert.ok(!('collaborationMode' in params));
     assert.equal(events.filter((e) => e.type === 'plan').length, 0);
+  });
+});
+
+test('runAppServerTurn：P4 被丢的通知现在都有分支（警告/改派/MCP/命名/diff/项目/技能/进度/设置/状态/额度/账户）', async () => {
+  await withFakeCodex(async ({ env }) => {
+    const events = [];
+    for await (const ev of runAppServerTurn('codex', { prompt: '走一轮', env, keyEnv: {} })) events.push(ev);
+    const notices = events.filter((e) => e.type === 'notice').map((e) => e.text);
+    assert.ok(notices.includes('配置警告摘要：详情'));
+    assert.ok(notices.includes('通用警告'));
+    assert.ok(notices.includes('守护警告'));
+    assert.ok(notices.includes('某功能已废弃：请迁移'));
+    assert.ok(notices.includes('模型已由 gpt-5.6-terra 改派为 gpt-5.6'));
+    assert.ok(notices.includes('MCP 服务 mcp-a 启动失败：连不上'));
+    const kinds = (t) => events.filter((e) => e.type === t);
+    assert.deepEqual(kinds('mcp'), [{ type: 'mcp', name: 'mcp-b', status: 'ready' }]);
+    assert.deepEqual(kinds('sessionName'), [{ type: 'sessionName', sessionId: 'th_fake', name: '自动命名标题' }]);
+    assert.equal(kinds('diff')[0].diff, 'diff --git a/x b/x');
+    assert.deepEqual(kinds('projectChanged'), [{ type: 'projectChanged', changeType: 'updated', projectId: 'p1' }]);
+    assert.equal(kinds('skillsChanged').length, 1);
+    assert.deepEqual(kinds('toolProgress'), [{ type: 'toolProgress', id: 'mcp1', message: '正在查…' }]);
+    assert.deepEqual(kinds('settings'), [{ type: 'settings', model: 'gpt-5.6-terra', effort: 'high' }]);
+    assert.deepEqual(kinds('threadStatus'), [{ type: 'threadStatus', status: 'active', flags: ['waitingOnApproval'] }]);
+    assert.deepEqual(kinds('remoteControl'), [{ type: 'remoteControl', status: 'connected', serverName: 'htch-runtime' }]);
+    assert.equal(kinds('ratelimits').length, 1);
+    assert.deepEqual(kinds('account'), [{ type: 'account', planType: 'plus', authMode: 'chatgpt' }]);
+    assert.equal(events.find((e) => e.type === 'done').failed, false);
   });
 });
 

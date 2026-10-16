@@ -8,6 +8,7 @@
   import { authHeaders } from '../../lib/api.js';
   import { showToast } from '../../lib/toast.svelte.js';
   import { t, tr } from '../../lib/i18n.js';
+  import { codexSkillsVersion } from '../../lib/cliChat.svelte.js';
 
   let { onClose } = $props();
 
@@ -58,7 +59,15 @@
     skillLoading = false;
   }
   // 切到技能页签才拉（失败后 skillErr 非空，不重复拉；成功后 skillList 非空，不重复拉）。
-  $effect(() => { if (tab === 'skill' && skillList === null && !skillErr) loadSkills(); });
+  // 技能变了（上游 skills/changed → cliChat 的 codexSkillsVersion +1）：已拉过就重拉。
+  let loadedSkillsVersion = $state(0);
+  $effect(() => {
+    if (tab === 'skill' && skillList === null && !skillErr) loadSkills();
+    if (skillList !== null && !skillLoading && codexSkillsVersion.v !== loadedSkillsVersion) {
+      loadedSkillsVersion = codexSkillsVersion.v;
+      loadSkills();
+    }
+  });
 
   // 技能来源：system = 内置，user = 用户自己的，project = 当前工作目录的；认不出的原样显示。
   const scopeLabel = (s) => s === 'system' ? t('系统') : s === 'user' ? t('用户') : s === 'project' ? t('项目') : String(s || '');

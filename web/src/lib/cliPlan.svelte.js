@@ -21,7 +21,9 @@ export async function loadAgentPlan(agent, force = false) {
   if (inflight[agent]) return inflight[agent];
   inflight[agent] = (async () => {
     try {
-      const r = await fetch(apiUrl('/api/agent/plan?agent=' + agent), { headers: authHeaders(), credentials: 'same-origin' });
+      // force = 连服务端缓存一起绕过（服务端 /api/agent/plan 自带 5 分钟缓存）：
+      // 额度/账户变化事件（P4 的 ratelimits/account）要的是真正实时，不是缓存值。
+      const r = await fetch(apiUrl('/api/agent/plan?agent=' + agent + (force ? '&force=1' : '')), { headers: authHeaders(), credentials: 'same-origin' });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
       agentPlan[agent] = j?.plan || null;

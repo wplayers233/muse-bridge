@@ -37,6 +37,8 @@ export function registerDraft(fn) { draftProvider = fn; return () => { if (draft
 // 文件面板订阅（agent fs 刷新 / goto 导航；面板挂载时注册）
 const fsSubs = new Set();
 export function onAgentFs(fn) { fsSubs.add(fn); return () => fsSubs.delete(fn); }
+// 文件刷新触发（Codex 的 project/changed 走这里：上游报项目变了，文件面板重载当前目录）。
+export function emitAgentFs(rel = null) { for (const fn of fsSubs) { try { fn(rel); } catch {} } }
 const gotoSubs = new Set();
 export function onAgentGoto(fn) { gotoSubs.add(fn); return () => gotoSubs.delete(fn); }
 

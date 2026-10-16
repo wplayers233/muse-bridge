@@ -10,6 +10,8 @@ import { authHeaders } from './api.js';
 import { pump } from './sse.js';
 import { noteApiFailure } from './feedback.svelte.js';
 import { t } from './i18n.js';
+import { loadAgentPlan } from './cliPlan.svelte.js';
+import { emitAgentFs } from './uiReport.js';
 
 const MAX_ITEMS = 400;   // 一个分页里留着的消息条数上限（流式增量都并进同一条）
 
@@ -43,6 +45,8 @@ const MAX_SAVE_TEXT = 4000;   // 单条消息正文落盘时的截断长度
 const MAX_SAVE_TOOL_TEXT = 4000;   // 单条工具输出落盘时的截断长度（localStorage 有配额）
 
 export const cliSessions = $state({ codex: [], zcode: [] });
+// Codex 技能版本号：skills/changed 事件到来时 +1，自定义页的技能页签据此重拉（见 CodexCustomizePage）。
+export const codexSkillsVersion = $state({ v: 0 });
 const activeId = { codex: '', zcode: '' };
 
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -64,6 +68,8 @@ const trim = (items) => items.map((m) => ({
     output: typeof tl.output === 'string' ? tl.output.slice(0, MAX_SAVE_TOOL_TEXT) : undefined,
     input: typeof tl.input === 'string' ? tl.input.slice(0, MAX_SAVE_TOOL_TEXT) : undefined,
   })) : [],
+  // 整轮聚合 diff 同样限长（turn/diff/updated 全量 diff 可能很大）。
+  diff: typeof m.diff === 'string' ? m.diff.slice(0, MAX_SAVE_TEXT) : m.diff,
   todos: Array.isArray(m.todos) ? m.todos.slice(-40) : [],
   notes: Array.isArray(m.notes) ? m.notes.slice(-20) : [],
   error: m.error || '',
@@ -213,7 +219,7 @@ function snapshot(agent) {
     if (i >= 0) list.splice(i, 1);      // 空会话不该在侧栏里占一行
     return;
   }
-  const rec = { id, sessionId: c.sessionId || '', cwd: c.cwd || '', at: Date.now(), title: titleOf(c.items), items: c.items.slice() };
+  const rec = { id, sessionId: c.sessionId || '', cwd: c.cwd || '', at: Date.now(), title: c.title || titleOf(c.items), items: c.items.slice() };
   if (i >= 0) list[i] = rec; else list.unshift(rec);
   // 列表按最近使用排，且只留最近的 MAX_SESSIONS 条
   list.sort((a, b) => (b.at || 0) - (a.at || 0));
@@ -231,7 +237,7 @@ export function cliNew(agent) {
   snapshot(agent);
   activeId[agent] = newId();
   const c = cliChat[agent];
-  c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.turnId = ''; c.seq = 0;
+  c.items = []; c.sessionId = ''; c.error = ''; c.cwd = ''; c.turnId = ''; c.seq = 0; c.title = '';
   persist();
 }
 
@@ -264,6 +270,7 @@ export async function cliPick(agent, id) {
   c.items = Array.isArray(rec.items) ? rec.items.slice() : [];
   c.sessionId = rec.sessionId || '';
   c.cwd = rec.cwd || '';
+  c.title = rec.title || '';
   c.error = '';
   c.seq = c.items.reduce((n, m) => Math.max(n, m.id || 0), 0);
   persist();
@@ -420,6 +427,38 @@ function applyEvent(agent, itemId, ev) {
     case 'reasoning': m.reasoning += (m.reasoning ? '\n\n' : '') + String(ev.text || ''); break;
     // 计划模式下计划内容流式增量（item/plan/delta），单独累进 m.plan，界面画成「计划」块。
     case 'plan': m.plan = (m.plan || '') + String(ev.text || ''); break;
+    // P4：上游状态类通知。sessionName = 会话自动命名（侧栏标题不再只靠首条消息截断）。
+    case 'sessionName': {
+      if (!ev.name) break;
+      // 只认本轮会话的命名（threadId 对不上 = 别人会话的事件，别串）。
+      if (c.sessionId && ev.sessionId && ev.sessionId !== c.sessionId) break;
+      c.title = String(ev.name);
+      const rec = cliSessions[agent].find((s) => s.id === activeId[agent]);
+      if (rec) rec.title = String(ev.name);
+      break;
+    }
+    // 长 MCP 调用的进度：挂到对应工具行上（按 itemId 找；行还没出来时丢弃）。
+    case 'toolProgress': {
+      const tl = (m.tools || []).find((x) => x && String(x.id || '') === String(ev.id || ''));
+      if (tl) tl.progress = String(ev.message || '');
+      break;
+    }
+    // 技能变了：自定义页的技能页签若已拉过，重拉一次（版本号信号，见 CodexCustomizePage）。
+    case 'skillsChanged': codexSkillsVersion.v += 1; break;
+    // 额度/账户变了：重拉账户菜单的 plan（force = 连服务端缓存一起绕过，真正实时）。
+    case 'ratelimits': case 'account': loadAgentPlan(agent, true).catch(() => {}); break;
+    // 会话状态：系统错误进聊天当提示；其余只记录。
+    case 'threadStatus': {
+      m.threadStatus = { status: String(ev.status || ''), flags: Array.isArray(ev.flags) ? ev.flags : [] };
+      if (ev.status === 'systemError') m.notes.push(t('Codex 会话状态：系统错误'));
+      break;
+    }
+    // 会话设置（模型/思考深度等）：存下来备查，不进聊天刷屏。
+    case 'settings': m.settings = { model: String(ev.model || ''), effort: String(ev.effort || '') }; break;
+    // 整轮聚合 diff：存下来（审阅面板集成是后续工作），快照里截断防膨胀（见 trim）。
+    case 'diff': m.diff = String(ev.diff || ''); break;
+    // 项目变了（文件增删改）：触发文件面板重载当前目录。
+    case 'projectChanged': emitAgentFs(); break;
     case 'todo': m.todos = Array.isArray(ev.items) ? ev.items.slice() : []; break;
     case 'tool': {
       const name = String(ev.name || t('工具'));

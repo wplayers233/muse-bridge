@@ -645,7 +645,91 @@ export async function* runAppServerTurn(agent, o = {}) {
         yield { type: 'error', message: String((p.error && p.error.message) || p.message || 'Codex 报错') };
         continue;
       }
-      // configWarning / account/* / mcpServer/* / thread/status/* 等：界面不画。
+      // P4：之前这里直接丢掉的通知（旧注释「界面不画」），按感知程度分流——
+      // 警告/改派进聊天当提示；状态类推事件给界面。形状都按本机 codex 0.149.0
+      // 重导出的 ServerNotification.json 核过，不照抄旧 prompt。
+      // 配置与版本警告：本来只在日志里，用户看不见。
+      if (m === 'configWarning') {
+        if (p.summary) yield { type: 'notice', text: String(p.summary) + (p.details ? '：' + String(p.details) : '') };
+        continue;
+      }
+      if (m === 'warning') {
+        if (p.message) yield { type: 'notice', text: String(p.message) };
+        continue;
+      }
+      if (m === 'guardianWarning') {
+        if (p.message) yield { type: 'notice', text: String(p.message) };
+        continue;
+      }
+      if (m === 'deprecationNotice') {
+        if (p.summary) yield { type: 'notice', text: String(p.summary) + (p.details ? '：' + String(p.details) : '') };
+        continue;
+      }
+      // 上游改派了模型：不说的话用户一直以为用的还是自己选的。
+      if (m === 'model/rerouted') {
+        if (p.fromModel && p.toModel) yield { type: 'notice', text: '模型已由 ' + String(p.fromModel) + ' 改派为 ' + String(p.toModel) };
+        continue;
+      }
+      // MCP 启动：失败才进聊天提示（每台都报「正在启动」会刷屏）；其余状态推事件。
+      if (m === 'mcpServer/startupStatus/updated') {
+        if (p.status === 'failed') {
+          yield { type: 'notice', text: 'MCP 服务 ' + String(p.name || '') + ' 启动失败' + (p.error ? '：' + String(p.error) : '') };
+        } else {
+          yield { type: 'mcp', name: String(p.name || ''), status: String(p.status || '') };
+        }
+        continue;
+      }
+      // 会话自动命名：侧栏标题不再只靠首条消息截断。
+      if (m === 'thread/name/updated') {
+        if (p.threadName) yield { type: 'sessionName', sessionId: String(p.threadId || ''), name: String(p.threadName) };
+        continue;
+      }
+      // 整轮聚合 diff：喂审阅面板（界面侧暂存，审阅面板集成是后续工作）。
+      if (m === 'turn/diff/updated') {
+        yield { type: 'diff', diff: String(p.diff || '').slice(0, 20_000) };
+        continue;
+      }
+      // 文件树刷新信号：界面侧触发文件面板重载（onAgentFs）。
+      if (m === 'project/changed') {
+        yield { type: 'projectChanged', changeType: String(p.changeType || ''), projectId: String(p.projectId || '') };
+        continue;
+      }
+      // 技能变了：界面侧重拉技能清单（自定义页技能页签）。
+      if (m === 'skills/changed') {
+        yield { type: 'skillsChanged' };
+        continue;
+      }
+      // 长 MCP 调用的进度：挂到对应的工具行上。
+      if (m === 'item/mcpToolCall/progress') {
+        if (p.message) yield { type: 'toolProgress', id: String(p.itemId || ''), message: String(p.message) };
+        continue;
+      }
+      // 会话设置（模型/思考深度等）：推事件给界面存，不进聊天刷屏。
+      if (m === 'thread/settings/updated') {
+        const s = p.threadSettings || {};
+        yield { type: 'settings', model: String(s.model || ''), effort: s.effort != null ? String(s.effort) : '' };
+        continue;
+      }
+      // 会话状态（忙/闲/系统错误；activeFlags: waitingOnApproval | waitingOnUserInput）。
+      if (m === 'thread/status/changed') {
+        const st = p.status || {};
+        yield { type: 'threadStatus', status: String(st.type || ''), flags: Array.isArray(st.activeFlags) ? st.activeFlags.map(String) : [] };
+        continue;
+      }
+      // 远程控制连接状态：界面不画，推事件备查。
+      if (m === 'remoteControl/status/changed') {
+        yield { type: 'remoteControl', status: String(p.status || ''), serverName: String(p.serverName || '') };
+        continue;
+      }
+      // 额度/账户变了：界面侧重拉 /api/agent/plan（原来靠轮询/开菜单才刷新）。
+      if (m === 'account/rateLimits/updated') {
+        yield { type: 'ratelimits' };
+        continue;
+      }
+      if (m === 'account/updated') {
+        yield { type: 'account', planType: p.planType != null ? String(p.planType) : '', authMode: p.authMode != null ? String(p.authMode) : '' };
+        continue;
+      }
     }
 
     // 走到这儿说明是 break 出来的（中断 / 超时），也要给一个收尾，前端才知道这一轮结束。

@@ -100,6 +100,7 @@ export default {
   '计划': 'Plan',
   '计划模式': 'Plan mode',
   '计划模式：只出计划，不改文件': 'Plan mode: plan only, no file changes',
+  'Codex 会话状态：系统错误': 'Codex session status: system error',
   '工具': 'Tool',
   '正在工作…': 'Working…',
 
