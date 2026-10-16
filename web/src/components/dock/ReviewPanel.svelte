@@ -13,7 +13,9 @@
   // 行内评论：悬停某行点 + 写反馈，存进 reviewComments（按 ws 分桶）；下一条聊天消息
   // 发送时由 cliSend 取走、拼成指令块注入给模型。评论只活在内存里，刷新页面丢掉
   // （diff 一变行号就可能对不上，持久化反而会带过期锚点）。
-  import { api } from '../../lib/api.js';
+  import { api, authHeaders } from '../../lib/api.js';
+  import { apiUrl } from '../../lib/server.js';
+  import { pump } from '../../lib/sse.js';
   import { dock } from '../../lib/dock.svelte.js';
   import { t, tc, tr } from '../../lib/i18n.js';
   import { showToast } from '../../lib/toast.svelte.js';
@@ -169,6 +171,68 @@
   // 不渲染就永远找不到它、只能「清空」全部删；单独列在文件末尾，带“该行已变化”与单条删除。
   // 判定见 lib/reviewCommentAnchor.js（纯函数，可单测）。
 
+  // ── 让 Codex 审一遍（P2：review/start，新线程 + inline，SSE 流回正文）──
+  // 只在 Codex 面板出现（Claude / ZCode 没有 review/start）；快照访客后端 403，这里直接不画。
+  // 目标四选一（官方 ReviewTarget）：未提交改动 / 提交 / 基线分支 / 自定义指令。
+  // 提交与基线分支复用面板已有的 commits / branches 下拉；审阅跑在新线程，不进聊天会话。
+  let reviewTarget = $state('uncommittedChanges');
+  let reviewCustom = $state('');
+  let reviewSha = $state('');
+  let reviewBase = $state('');
+  let reviewRunning = $state(false);
+  let reviewText = $state('');
+  let reviewErr = $state('');
+  let reviewDone = $state(false);
+  let reviewAbort = null;
+
+  const reviewReady = $derived(
+    reviewTarget === 'commit' ? !!reviewSha
+    : reviewTarget === 'baseBranch' ? !!reviewBase
+    : reviewTarget === 'custom' ? !!reviewCustom.trim()
+    : true,
+  );
+  function setReviewTarget(v) {
+    reviewTarget = v;
+    if (v === 'commit') loadCommits();
+    if (v === 'baseBranch') loadBranches();
+  }
+  async function startReview() {
+    if (reviewRunning || !reviewReady) return;
+    if (reviewAbort) { try { reviewAbort.abort(); } catch {} }
+    const target = reviewTarget === 'uncommittedChanges' ? { type: 'uncommittedChanges' }
+      : reviewTarget === 'commit' ? { type: 'commit', sha: reviewSha }
+      : reviewTarget === 'baseBranch' ? { type: 'baseBranch', branch: reviewBase }
+      : { type: 'custom', instructions: reviewCustom.trim() };
+    reviewRunning = true; reviewText = ''; reviewErr = ''; reviewDone = false;
+    const ac = new AbortController();
+    reviewAbort = ac;
+    try {
+      const res = await fetch(apiUrl('/api/codex/review'), {
+        method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        credentials: 'same-origin', signal: ac.signal,
+        body: JSON.stringify({ ws, target }),
+      });
+      if (!res.ok) {
+        let msg = 'HTTP ' + res.status;
+        try { const j = await res.json(); if (j && j.error) msg = String(j.error); } catch {}
+        reviewErr = msg;
+        return;
+      }
+      await pump(res, (ev) => {
+        if (ev.type === 'text' && ev.text) reviewText += String(ev.text);
+        else if (ev.type === 'error' && ev.message) reviewErr = String(ev.message);
+        else if (ev.type === 'done') { reviewDone = !ev.failed; if (ev.failed && !reviewErr) reviewErr = t('审阅失败'); }
+      }, ac.signal);
+    } catch (e) {
+      if (e && e.name !== 'AbortError') reviewErr = (e && e.message) || String(e);
+    } finally {
+      if (reviewAbort === ac) reviewAbort = null;
+      reviewRunning = false;
+    }
+  }
+  function stopReview() { if (reviewAbort) { try { reviewAbort.abort(); } catch {} } }
+  function clearReview() { stopReview(); reviewText = ''; reviewErr = ''; reviewDone = false; }
+
   const stLabel = { A: tc('diff', '新增'), D: tc('diff', '删除'), R: tc('diff', '改名'), U: tc('diff', '未跟踪'), C: tc('diff', '复制') };
   const SCOPE_LABEL = { unstaged: t('未暂存'), staged: t('已暂存'), commit: t('提交'), branch: t('分支'), lastturn: t('上一轮') };
 </script>
@@ -222,6 +286,46 @@
     </div>
     {#if lastTurnTruncated}
       <div class="rv-warn">{t('本轮 diff 已截断，仅供预览，完整改动请看对应 Git 范围')}</div>
+    {/if}
+    {#if agent === 'codex' && !snapReadOnly}
+      <div class="rv-review">
+        <div class="rv-review-title">{t('让 Codex 审一遍')}</div>
+        <div class="rv-review-row">
+          <select value={reviewTarget} onchange={(e) => setReviewTarget(e.target.value)}>
+            <option value="uncommittedChanges">{t('未提交改动')}</option>
+            <option value="commit">{t('某次提交')}</option>
+            <option value="baseBranch">{t('对比基线分支')}</option>
+            <option value="custom">{t('自定义指令')}</option>
+          </select>
+          {#if reviewTarget === 'commit'}
+            <select value={reviewSha} onchange={(e) => { reviewSha = e.target.value; }}>
+              <option value="">{t('选择一个提交…')}</option>
+              {#each (commits || []) as c}
+                <option value={c.sha}>{c.short} {c.subject}</option>
+              {/each}
+            </select>
+          {/if}
+          {#if reviewTarget === 'baseBranch'}
+            <select value={reviewBase} onchange={(e) => { reviewBase = e.target.value; }}>
+              <option value="">{t('选择基线分支…')}</option>
+              {#each (branches || []) as b}
+                <option value={b.name}>{b.name}{b.current ? t('（当前）') : ''}</option>
+              {/each}
+            </select>
+          {/if}
+        </div>
+        {#if reviewTarget === 'custom'}
+          <textarea class="rv-review-ta" rows="2" bind:value={reviewCustom} placeholder={t('写下要审什么，例如：只看有没有明显的 bug')}></textarea>
+        {/if}
+        <div class="rv-review-btns">
+          <button class="rv-act" disabled={reviewRunning || !reviewReady} onclick={startReview}>{reviewRunning ? t('审阅中…') : t('开始审阅')}</button>
+          {#if reviewRunning}<button class="rv-act" onclick={stopReview}>{t('停止')}</button>{/if}
+          {#if reviewText || reviewErr || reviewDone}<button class="rv-act" onclick={clearReview}>{t('清除')}</button>{/if}
+        </div>
+        {#if reviewErr}<div class="rv-review-err">{reviewErr}</div>{/if}
+        {#if reviewText}<div class="rv-review-out">{reviewText}</div>{/if}
+        {#if reviewDone && !reviewErr}<div class="rv-review-done">{t('审阅完成')}</div>{/if}
+      </div>
     {/if}
     {#if scope === 'commit' && !sha}
       <div class="rv-empty">{t('请先选择一个提交')}</div>
@@ -425,6 +529,17 @@
   .dl-cmt-ed textarea { width: 100%; font-size: 13px; padding: 8px; border: 1px solid var(--divider); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }
   .dl-cmt-btns { display: flex; gap: 8px; margin-top: 6px; }
   .dl-cmt-btns button { font-size: 12.5px; padding: 4px 12px; border-radius: 8px; background: color-mix(in srgb, currentColor 8%, transparent); }
+
+  /* 让 Codex 审一遍（P2）：只在 Codex 面板出现，审阅跑在新线程、不进聊天会话。 */
+  .rv-review { margin: 2px 6px 10px; padding: 10px 10px 12px; border: 1px solid var(--divider); border-radius: 10px; }
+  .rv-review-title { font-size: 13px; font-weight: 560; padding-bottom: 8px; }
+  .rv-review-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .rv-review-row select { flex: 1; min-width: 120px; font-size: 13px; padding: 6px 8px; border: 1px solid var(--divider); border-radius: 8px; background: var(--bg); color: var(--text); }
+  .rv-review-ta { width: 100%; margin-top: 6px; font-size: 13px; padding: 8px; border: 1px solid var(--divider); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }
+  .rv-review-btns { display: flex; gap: 6px; padding-top: 8px; flex-wrap: wrap; }
+  .rv-review-out { margin-top: 10px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+  .rv-review-err { margin-top: 10px; font-size: 13px; color: var(--crit); }
+  .rv-review-done { margin-top: 8px; font-size: 12px; color: var(--muted); }
 
   .spin { width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--coral); border-radius: 50%; animation: rvspin .8s linear infinite; flex: none; }
   @keyframes rvspin { to { transform: rotate(360deg); } }

@@ -122,6 +122,18 @@ export default {
   '不带了': 'Don’t attach',
   '清空': 'Clear',
   '行内审阅评论（来自审阅面板，请处理，保持改动范围最小）：': 'Inline review comments (from the review panel — please address them and keep the scope minimal):',
+  // P2：让 Codex 审一遍（review/start，新线程 + inline）
+  '让 Codex 审一遍': 'Ask Codex to review',
+  '未提交改动': 'Uncommitted changes',
+  '某次提交': 'A commit',
+  '对比基线分支': 'Against a base branch',
+  '自定义指令': 'Custom instructions',
+  '选择基线分支…': 'Select a base branch…',
+  '写下要审什么，例如：只看有没有明显的 bug': 'What should it review? e.g. only look for obvious bugs',
+  '开始审阅': 'Start review',
+  '审阅中…': 'Reviewing…',
+  '审阅失败': 'Review failed',
+  '审阅完成': 'Review complete',
 
   // —— 浏览器 ——
   '桌面': 'Desktop',

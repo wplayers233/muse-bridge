@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 const mod = await import('./runtime/agent-appserver.mjs');
-const { buildTurnInput, appPlanItems, appToolName, normAppToolItem, normAppStatus, runAppServerTurn } = mod;
+const { buildTurnInput, appPlanItems, appToolName, normAppToolItem, normAppStatus, runAppServerTurn, runCodexReview, normReviewTarget } = mod;
 
 test('buildTurnInput：无图时只有一条 text', () => {
   assert.deepEqual(buildTurnInput('你好'), [{ type: 'text', text: '你好' }]);
@@ -198,6 +198,26 @@ rl.on('line', (line) => {
     n('turn/completed', { threadId: 'th_fake', turnId: 't1', turn: { status: 'completed' } });
     return;
   }
+  // P2：review/start（新线程 + inline）。FAKE_REVIEW_ERROR=1 时模拟上游拒掉
+  // detached（-32600 paginated threads do not support detached review）。
+  if (m.method === 'review/start') {
+    if (process.env.FAKE_CAPTURE) { try { require('node:fs').writeFileSync(process.env.FAKE_CAPTURE, JSON.stringify(m.params || {})); } catch {} }
+    if (process.env.FAKE_REVIEW_ERROR) {
+      send({ jsonrpc: '2.0', id: m.id, error: { code: -32600, message: 'paginated threads do not support detached review' } });
+      return;
+    }
+    send({ jsonrpc: '2.0', id: m.id, result: { reviewThreadId: 'th_fake' } });
+    const n = (method, params) => send({ jsonrpc: '2.0', method, params });
+    n('item/started', { threadId: 'th_fake', turnId: 't1', item: { type: 'enteredReviewMode', id: 'r1', review: '检查改动' } });
+    // 上游对评审模式项会发 started 与 completed 两遍：completed 那遍不该再报一次提示。
+    n('item/completed', { threadId: 'th_fake', turnId: 't1', item: { type: 'enteredReviewMode', id: 'r1', review: '检查改动' } });
+    n('item/agentMessage/delta', { threadId: 'th_fake', turnId: 't1', itemId: 'a1', delta: '审阅结论：没发现问题。' });
+    // delta 已流过：item/completed 的 text 不应再吐一遍。
+    n('item/completed', { threadId: 'th_fake', turnId: 't1', item: { type: 'agentMessage', id: 'a1', text: '审阅结论：没发现问题。' } });
+    n('item/started', { threadId: 'th_fake', turnId: 't1', item: { type: 'exitedReviewMode', id: 'r2', review: '' } });
+    n('turn/completed', { threadId: 'th_fake', turnId: 't1', turn: { status: 'completed' } });
+    return;
+  }
   send({ jsonrpc: '2.0', id: m.id, result: {} });
 });
 `;
@@ -339,4 +359,59 @@ test('runAppServerTurn：planMode 且没选模型时从 model/list 拿默认模�
     assert.equal(params.collaborationMode.settings.model, 'fake-model');
     assert.equal(events.find((e) => e.type === 'done').failed, false);
   });
+});
+
+// ── P2：review/start（新线程 + inline）─────────────────────────────────────
+test('normReviewTarget：四种 target 形状 + 剥多余字段 + 非法输入拦在本地', () => {
+  assert.deepEqual(normReviewTarget({ type: 'uncommittedChanges', extra: 1 }), { ok: true, target: { type: 'uncommittedChanges' } });
+  assert.deepEqual(normReviewTarget({ type: 'baseBranch', branch: 'main' }), { ok: true, target: { type: 'baseBranch', branch: 'main' } });
+  assert.deepEqual(normReviewTarget({ type: 'commit', sha: 'abc1234', title: 'add z', x: 1 }), { ok: true, target: { type: 'commit', sha: 'abc1234', title: 'add z' } });
+  assert.deepEqual(normReviewTarget({ type: 'commit', sha: 'abc1234' }), { ok: true, target: { type: 'commit', sha: 'abc1234' } });
+  assert.deepEqual(normReviewTarget({ type: 'custom', instructions: ' 只看 bug ' }), { ok: true, target: { type: 'custom', instructions: '只看 bug' } });
+  assert.equal(normReviewTarget({ type: 'commit', sha: 'xyz' }).ok, false, '非 hex sha 不合法');
+  assert.equal(normReviewTarget({ type: 'baseBranch', branch: '' }).ok, false, '空分支不合法');
+  assert.equal(normReviewTarget({ type: 'baseBranch', branch: '../escape' }).ok, false, '分支名含 .. 不合法');
+  assert.equal(normReviewTarget({ type: 'custom', instructions: '   ' }).ok, false, '空指令不合法');
+  assert.equal(normReviewTarget({ type: 'detached' }).ok, false, 'detached 不是合法 target 类型');
+  assert.equal(normReviewTarget(null).ok, false, '非对象不合法');
+  assert.equal(normReviewTarget({ type: 'custom', instructions: 'x'.repeat(5000) }).target.instructions.length, 4000, '指令截到 4000');
+});
+
+test('runCodexReview：review/start 不带 delivery（inline 默认），正文流一次、评审模式提示、正常收尾', async () => {
+  await withFakeCodex(async ({ env, capture }) => {
+    const events = [];
+    for await (const ev of runCodexReview({ target: { type: 'uncommittedChanges' }, env, keyEnv: {} })) events.push(ev);
+    const params = JSON.parse(readFileSync(capture, 'utf8'));
+    assert.equal(params.threadId, 'th_fake');
+    assert.deepEqual(params.target, { type: 'uncommittedChanges' });
+    assert.ok(!('delivery' in params), '不传 delivery：探针实测不传即 inline，传 detached 会被 -32600 拒掉');
+    assert.deepEqual(events.filter((e) => e.type === 'start'), [{ type: 'start', reviewThreadId: 'th_fake' }]);
+    assert.deepEqual(events.filter((e) => e.type === 'text').map((e) => e.text), ['审阅结论：没发现问题。'], 'delta 流过后 completed 不重复');
+    const notices = events.filter((e) => e.type === 'notice').map((e) => e.text);
+    assert.deepEqual(notices.filter((t) => t.startsWith('进入评审模式')), ['进入评审模式：检查改动'], '评审模式提示只报一次（completed 相不重复）');
+    assert.ok(notices.includes('退出评审模式'));
+    const done = events.find((e) => e.type === 'done');
+    assert.deepEqual(done, { type: 'done', reviewThreadId: 'th_fake', failed: false, interrupted: false });
+  });
+});
+
+test('runCodexReview：上游拒掉 review/start（-32600）→ error 事件，不给 done', async () => {
+  await withFakeCodex(async ({ env }) => {
+    const env2 = { ...env, FAKE_REVIEW_ERROR: '1' };
+    const events = [];
+    for await (const ev of runCodexReview({ target: { type: 'custom', instructions: '审一下' }, env: env2, keyEnv: {} })) events.push(ev);
+    assert.equal(events.filter((e) => e.type === 'error').length, 1);
+    assert.ok(events.find((e) => e.type === 'error').message.includes('paginated threads'));
+    assert.equal(events.filter((e) => e.type === 'done').length, 0);
+  });
+});
+
+test('runCodexReview：非法 target 在本地拦下，不起进程（错误是校验文案，不是“没装 CLI”）', async () => {
+  const events = [];
+  // 空 PATH + 不认自带 bin：真起了进程也找不到 codex；校验在前，应先报校验错。
+  const env = { ...process.env, BRIDGE_AGENT_BIN_DIR: '', PATH: '' };
+  for await (const ev of runCodexReview({ target: { type: 'commit', sha: 'zzz' }, env, keyEnv: {} })) events.push(ev);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'error');
+  assert.equal(events[0].message, '提交号不合法');
 });

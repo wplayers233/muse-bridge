@@ -377,6 +377,185 @@ export async function appServerAvailable({ env = process.env, binDir = '' } = {}
   return ok;
 }
 
+// review/start 的 target（四选一，形状按 0.162.1 官方 schema ReviewTarget）。
+// 只做形状校验与多余字段剥离：sha/分支名不合法直接拦在本地，不发给上游；
+// custom 的指令截到 4000 字（审阅指令没必要更长，超长也是模型噪音）。
+// 返回 { ok: true, target } 或 { ok: false, error }。
+const REVIEW_SHA_RE = /^[0-9a-f]{4,40}$/i;
+const REVIEW_REF_RE = /^[A-Za-z0-9._/-]+$/;
+export function normReviewTarget(raw) {
+  const t = raw && typeof raw === 'object' ? raw : {};
+  const type = String(t.type || '');
+  if (type === 'uncommittedChanges') return { ok: true, target: { type } };
+  if (type === 'baseBranch') {
+    const branch = String(t.branch || '').trim().slice(0, 200);
+    if (!branch) return { ok: false, error: '请选一个基线分支' };
+    // 正则放过了 . 与 /：显式拦 ..（目录穿越），其余交给上游 git 解析。
+    if (branch.includes('..') || !REVIEW_REF_RE.test(branch)) return { ok: false, error: '分支名不合法' };
+    return { ok: true, target: { type, branch } };
+  }
+  if (type === 'commit') {
+    const sha = String(t.sha || '').trim();
+    if (!REVIEW_SHA_RE.test(sha)) return { ok: false, error: '提交号不合法' };
+    const title = String(t.title || '').trim().slice(0, 200);
+    return { ok: true, target: title ? { type, sha, title } : { type, sha } };
+  }
+  if (type === 'custom') {
+    const instructions = String(t.instructions || '').trim().slice(0, 4000);
+    if (!instructions) return { ok: false, error: '请写自定义审阅指令' };
+    return { ok: true, target: { type, instructions } };
+  }
+  return { ok: false, error: '未知的审阅范围' };
+}
+
+/**
+ * 跑一轮 Codex 审阅（review/start，P2）。
+ *
+ * 【为什么是新线程 + inline】探针实测（codex 0.162.1，临时仓 + 临时线程）：
+ *   - 不传 delivery 即 inline，四种 target 都跑通（未提交改动 / 提交 / 基线分支 / 自定义），
+ *     审阅正文真实对应目标 diff，不需要 experimentalApi。
+ *   - delivery:'detached' 在分页线程上被上游直接拒掉（-32600 paginated threads do not
+ *     support detached review），与 schema 里的废弃说明一致——所以这里不传 delivery，
+ *     也不提供 detached 选项。
+ *   - 审阅是只读操作：新开线程（不污染聊天会话），thread/start 带 sandbox 'read-only' +
+ *     approvalPolicy 'never'（上游若拒，错误会原样回给调用方）。
+ *
+ * @param {object} o
+ * @param {object} o.target             规范化后的 ReviewTarget（normReviewTarget 的产物）
+ * @param {string} [o.cwd]              工作目录（审阅的仓库）
+ * @param {string} [o.model]            模型（空 = CLI 自己的配置；ThreadStartParams 有 model，
+ *                                      没有 effort——思考深度只能走 turn/start，审阅没有 turn/start，
+ *                                      所以审阅用该模型的默认思考深度）
+ * @param {AbortSignal} [o.signal]
+ * @param {object} [o.env]
+ * @param {object} [o.keyEnv]
+ * @param {string} [o.binDir]
+ */
+export async function* runCodexReview(o = {}) {
+  const { target, cwd = '', model = '', signal = null, env = process.env, keyEnv, binDir = '' } = o;
+  const checked = normReviewTarget(target);
+  if (!checked.ok) { yield { type: 'error', message: checked.error }; return; }
+  const searchEnv = binDir ? { ...env, PATH: binDir + ':' + (env.PATH || '') } : env;
+  const bin = findCliBin('codex', searchEnv);
+  if (!bin) { yield { type: 'error', message: '这台机器上还没装 Codex CLI' }; return; }
+
+  const isJs = /\.(c|m)?js$/i.test(bin);
+  const child = spawn(isJs ? process.execPath : bin, isJs ? [bin, 'app-server'] : ['app-server'], {
+    cwd: cwd || undefined,
+    env: { ...searchEnv, ...(keyEnv !== undefined ? keyEnv : cliKeyEnv('codex')), NO_COLOR: '1', TERM: 'dumb' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+  });
+  const logs = [];
+  const rpc = connect(child, { logs });
+
+  const kill = () => {
+    try {
+      if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+      else child.kill('SIGKILL');
+    } catch { try { child.kill('SIGKILL'); } catch {} }
+  };
+  const onAbort = () => kill();
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  let reviewThreadId = '';
+  let sawError = false;
+  let turnSeen = false;
+  let sawAgentDelta = false;
+
+  try {
+    const init = await rpc.call('initialize', { clientInfo: { name: 'muse-bridge', title: 'Muse Bridge', version: '1.0.0' }, capabilities: { experimentalApi: true } }, 15_000);
+    if (!init || !init.result) { yield { type: 'error', message: 'app-server 握手失败' + (logs.length ? '：' + logs[logs.length - 1] : '') }; return; }
+    rpc.notify('initialized', {});
+
+    // 新开线程（分离线程，审阅不进聊天会话）。只读：不改文件、不审批。
+    const thParams = { cwd: cwd || undefined, approvalPolicy: 'never', sandbox: 'read-only' };
+    if (model) thParams.model = model;
+    const th = await rpc.call('thread/start', thParams, 20_000);
+    const id = th && th.result && (th.result.thread?.id || th.result.threadId || (th.result.thread && th.result.thread.sessionId));
+    if (!id) { yield { type: 'error', message: '开不了审阅会话：' + JSON.stringify((th && th.error) || '') }; return; }
+    reviewThreadId = id;
+
+    const started = await rpc.call('review/start', { threadId: reviewThreadId, target: checked.target }, 30_000);
+    if (!started || started.error) { yield { type: 'error', message: '审阅没发出去：' + JSON.stringify((started && started.error) || '') }; return; }
+    yield { type: 'start', reviewThreadId };
+
+    for (;;) {
+      if (signal?.aborted) { yield { type: 'notice', text: '已中断' }; break; }
+      const msg = await rpc.next(turnSeen ? 120_000 : 60_000);
+      if (!msg) { yield { type: 'error', message: '等不到 Codex 的回应（连接断了或它卡住了）' }; break; }
+      const m = msg.method;
+      const p = msg.params || {};
+
+      if (m === 'turn/started') { turnSeen = true; continue; }
+
+      // 审批不该来（approvalPolicy 'never'）：即使来了，connect 层已自动回 decline，
+      // 这里只跳过，不给面板发它处理不了的 approval 卡。
+      if (m === '__approval') continue;
+
+      if (m === 'item/agentMessage/delta' || m === 'item/agent_message/delta') {
+        if (p.delta) { sawAgentDelta = true; yield { type: 'text', text: String(p.delta) }; }
+        continue;
+      }
+      // 思考增量与计划增量：审阅结果只看 agentMessage，这里不给面板添噪音。
+      if (m === 'item/reasoning/textDelta' || m === 'item/reasoning/summaryTextDelta' || m === 'item/plan/delta') continue;
+
+      if (m === 'item/started' || m === 'item/completed' || m === 'item/updated') {
+        const item = p.item || {};
+        const phase = m.slice(5);
+        if (item.type === 'agentMessage' && phase === 'completed' && item.text) {
+          if (!sawAgentDelta) yield { type: 'text', text: String(item.text) };
+          continue;
+        }
+        if (item.type === 'agentMessage' && phase === 'started') { sawAgentDelta = false; continue; }
+        if (item.type === 'enteredReviewMode' || item.type === 'exitedReviewMode') {
+          // 上游对这类项会发 started 与 completed 两遍（两相都带同一项）；
+          // 只在 started 报一次，否则面板会看到两条相同的提示。
+          if (phase !== 'started') continue;
+          yield { type: 'notice', text: (item.type === 'enteredReviewMode' ? '进入评审模式' : '退出评审模式')
+            + (item.review ? '：' + String(item.review).slice(0, 120) : '') };
+          continue;
+        }
+        continue;
+      }
+
+      if (m === 'turn/completed' || m === 'turn/failed' || m === 'turn/aborted') {
+        const t = p.turn || {};
+        const st = String(t.status || (m === 'turn/completed' ? 'completed' : 'failed'));
+        if (st === 'failed' && t.error) { sawError = true; yield { type: 'error', message: String(t.error.message || t.error || '审阅失败了') }; }
+        yield { type: 'done', reviewThreadId, failed: st === 'failed', interrupted: st === 'interrupted' };
+        return;
+      }
+      if (m === 'error') {
+        sawError = true;
+        yield { type: 'error', message: String((p.error && p.error.message) || p.message || 'Codex 报错') };
+        continue;
+      }
+      if (m === 'configWarning') {
+        if (p.summary) yield { type: 'notice', text: String(p.summary) + (p.details ? '：' + String(p.details) : '') };
+        continue;
+      }
+      if (m === 'warning') {
+        if (p.message) yield { type: 'notice', text: String(p.message) };
+        continue;
+      }
+      if (m === 'guardianWarning') {
+        if (p.message) yield { type: 'notice', text: String(p.message) };
+        continue;
+      }
+      if (m === 'deprecationNotice') {
+        if (p.summary) yield { type: 'notice', text: String(p.summary) + (p.details ? '：' + String(p.details) : '') };
+        continue;
+      }
+      // 其余通知（diff、审批状态、额度…）审阅面板用不上，跳过。
+    }
+
+    yield { type: 'done', reviewThreadId, failed: sawError, interrupted: true };
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    kill();
+  }
+}
 /**
  * 跑一轮 Codex 对话（app-server 路径）。产出与 runtime/agent-cli.mjs 同一套归一事件。
  *

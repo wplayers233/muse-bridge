@@ -36,6 +36,8 @@ import {
   codexCallerKey, startCodexTurn, attachCodexTurn, stopCodexTurn,
   listCodexTurns, findCodexTurn, answerCodexApproval,
 } from '../runtime/codex-turns.mjs';
+import { runCodexReview, normReviewTarget } from '../runtime/agent-appserver.mjs';
+import { authorizeProjectPath } from '../claude-projects.mjs';
 import { cliCwdMap, getCliPrefs, setCliCwd, setCliAgentPrefs } from '../runtime/cli-cwd.mjs';
 import { listCliSessions, getCliSession, saveCliSession, deleteCliSession } from '../runtime/cli-sessions.mjs';
 import { cliSpawnKeyEnv, cliDataEnv, keyDirFor, setAgentKey, agentKeyState, isKeyAgent } from '../runtime/agent-keys.mjs';
@@ -394,6 +396,44 @@ export function registerAgentCliRoutes(router, { identify }) {
     const env = { ...process.env, ...cliDataEnv(ctx), ...cliSpawnKeyEnv(ctx, 'codex') };
     const r = await codexPluginRemove({ env, selector });
     json(res, r.ok ? 200 : 500, r.ok ? { ok: true } : { error: r.error || '移除失败' });
+  });
+
+  // ── Codex 审阅（P2：review/start，新线程 + inline，SSE 流回正文）────────────
+  // 审阅是一轮模型调用（花额度、起进程），不是只读查询：快照访客 403（与面板的
+  // Git 写操作同一口径）。与聊天轮次不同：审阅绑在面板视图上，客户端断开即停，
+  // 不进后台轮次的「断开不断进程」那套（不需要回来接）。
+  router.on('POST', '/api/codex/review', async (req, res) => {
+    const ctx = requireCtx(identify, req, res);
+    if (!ctx) return;
+    if (!allow(ctx, 'codex')) return json(res, 403, { error: 'codex 未启用，或你的账号没有使用权限' });
+    if (ctx.kind === 'snap') return json(res, 403, { error: '快照访客不能发起审阅' });
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    let ws;
+    try { ws = authorizeProjectPath(ctx, body && body.ws); } catch (e) { return json(res, (e && e.status) || 500, { error: (e && e.message) || String(e) }); }
+    const checked = normReviewTarget(body && body.target);
+    if (!checked.ok) return json(res, 400, { error: checked.error });
+    if (!findCliBin('codex')) return json(res, 409, { error: CLI_MISSING_NOTE.codex });
+
+    const prefs = getCliPrefs(ctx, 'codex');
+    const spawnEnv = { ...process.env, ...cliDataEnv(ctx) };
+    const keyEnv = cliSpawnKeyEnv(ctx, 'codex');
+    const ac = new AbortController();
+    let gone = false;
+    // res.on 有则挂（真 ServerResponse 一定有；路由单测的假 res 可能没有，守一下）。
+    if (typeof res.on === 'function') res.on('close', () => { if (!res.writableFinished && !gone) { gone = true; ac.abort(); } });
+
+    sseOpen(res);
+    try {
+      for await (const ev of runCodexReview({ target: checked.target, cwd: ws, model: prefs.model, env: spawnEnv, keyEnv, signal: ac.signal })) {
+        if (gone) break;
+        sseSend(res, ev);
+      }
+    } catch (e) {
+      sseSend(res, { type: 'error', message: (e && e.message) || String(e) });
+    } finally {
+      try { res.end(); } catch {}
+    }
   });
 
   // 记住选定的模型 / 思考深度。传空串 = 清掉，交回 CLI 自己的配置（~/.codex/config.toml）。
