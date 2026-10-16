@@ -418,6 +418,8 @@ function applyEvent(agent, itemId, ev) {
     case 'session': if (ev.sessionId) c.sessionId = ev.sessionId; break;
     case 'text': m.text += String(ev.text || ''); break;
     case 'reasoning': m.reasoning += (m.reasoning ? '\n\n' : '') + String(ev.text || ''); break;
+    // 计划模式下计划内容流式增量（item/plan/delta），单独累进 m.plan，界面画成「计划」块。
+    case 'plan': m.plan = (m.plan || '') + String(ev.text || ''); break;
     case 'todo': m.todos = Array.isArray(ev.items) ? ev.items.slice() : []; break;
     case 'tool': {
       const name = String(ev.name || t('工具'));
@@ -471,7 +473,7 @@ function applyEvent(agent, itemId, ev) {
   }
 }
 
-export async function cliSend(agent, prompt, images = []) {
+export async function cliSend(agent, prompt, images = [], opts = {}) {
   const text = String(prompt || '');
   const c = cliChat[agent];
   if (c.busy || !text.trim()) return;
@@ -479,7 +481,7 @@ export async function cliSend(agent, prompt, images = []) {
   const imgs = Array.isArray(images) ? images.length : 0;
   c.items.push({ role: 'user', id: ++c.seq, text, imgs, status: 'done' });
   const itemId = ++c.seq;
-  c.items.push({ role: 'agent', id: itemId, text: '', reasoning: '', tools: [], todos: [], notes: [], approvals: [], error: '', auth: false, status: 'running', usage: null });
+  c.items.push({ role: 'agent', id: itemId, text: '', reasoning: '', plan: '', tools: [], todos: [], notes: [], approvals: [], error: '', auth: false, status: 'running', usage: null });
   if (c.items.length > MAX_ITEMS) c.items.splice(0, c.items.length - MAX_ITEMS);
   c.busy = true;
   const ac = new AbortController();
@@ -489,10 +491,12 @@ export async function cliSend(agent, prompt, images = []) {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       // 图片走 base64 裸数据（不含 dataURL 前缀）；服务端落盘后交官方 -i 参数（仅 codex）。
+      // plan：Codex 计划模式开关（单条消息生效；zcode 没有这个参数，不发）。
       body: JSON.stringify({
         prompt: text,
         sessionId: c.sessionId || undefined,
         images: imgs ? images.map((a) => ({ name: a.name, data: String(a.dataUrl || '').split(',')[1] || '' })) : undefined,
+        ...(opts.plan === true ? { plan: true } : {}),
       }),
       credentials: 'same-origin',
       signal: ac.signal,

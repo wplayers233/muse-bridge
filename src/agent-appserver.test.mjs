@@ -2,7 +2,7 @@
 // 形状依据：codex-cli 0.162.1 `app-server generate-json-schema` 导出的官方 schema（U1/U2/U6 已复核）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 const mod = await import('./runtime/agent-appserver.mjs');
@@ -156,10 +156,18 @@ rl.on('line', (line) => {
   let m; try { m = JSON.parse(line); } catch { return; }
   if (m.id == null) return;
   if (m.method === 'initialize') { send({ jsonrpc: '2.0', id: m.id, result: { model: 'fake' } }); return; }
+  if (m.method === 'model/list') { send({ jsonrpc: '2.0', id: m.id, result: { data: [{ model: 'fake-model', isDefault: true }] } }); return; }
   if (m.method === 'thread/start') { send({ jsonrpc: '2.0', id: m.id, result: { thread: { id: 'th_fake' } } }); return; }
   if (m.method === 'turn/start') {
     send({ jsonrpc: '2.0', id: m.id, result: { turn: { id: 't1' } } });
     const n = (method, params) => send({ jsonrpc: '2.0', method, params });
+    // 抓包：测试读这个文件断言 turn/start 到底带了什么（planMode 的 collaborationMode）。
+    if (process.env.FAKE_CAPTURE) { try { require('node:fs').writeFileSync(process.env.FAKE_CAPTURE, JSON.stringify(m.params || {})); } catch {} }
+    // 计划模式才有 plan 增量（真机行为：普通轮没有 item/plan/delta）。
+    if (m.params && m.params.collaborationMode) {
+      n('item/plan/delta', { threadId: 'th_fake', turnId: 't1', itemId: 'pl1', delta: '第一步：读代码' });
+      n('item/plan/delta', { threadId: 'th_fake', turnId: 't1', itemId: 'pl1', delta: '第二步：改实现' });
+    }
     n('item/started', { threadId: 'th_fake', turnId: 't1', item: { type: 'sleep', id: 's1', durationMs: 1500 } });
     n('item/completed', { threadId: 'th_fake', turnId: 't1', item: { type: 'sleep', id: 's1', durationMs: 1500 } });
     n('item/started', { item: { type: 'enteredReviewMode', id: 'r1', review: '检查刚写的代码' } });
@@ -219,4 +227,57 @@ test('runAppServerTurn：消息循环里 sleep/评审/plan/patchUpdated/terminal
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+// ── 计划模式（P2）：turn/start 带 collaborationMode，plan 增量成 plan 事件 ─────
+// 假 codex 复用上面的 FAKE_CODEX（model/list + turn/start 抓包 + 计划模式才发 plan 增量）。
+async function withFakeCodex(fn) {
+  const tmp = mkdtempSync(path.join(tmpdir(), 'bridge-fake-codex-'));
+  try {
+    const binDir = path.join(tmp, 'node_modules', '.bin');
+    const realDir = path.join(tmp, 'node_modules', '@openai', 'codex', 'bin');
+    mkdirSync(realDir, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(path.join(binDir, 'codex.cmd'), '@echo off\r\nnode "%~dp0\\..\\@openai\\codex\\bin\\codex.js" %*\r\n');
+    writeFileSync(path.join(realDir, 'codex.js'), FAKE_CODEX);
+    const sh = path.join(binDir, 'codex');
+    writeFileSync(sh, '#!/bin/sh\nexec ' + JSON.stringify(process.execPath) + ' ' + JSON.stringify(path.join(realDir, 'codex.js')) + ' "$@"\n');
+    chmodSync(sh, 0o755);
+    const capture = path.join(tmp, 'turn-start.json');
+    const env = { ...process.env, BRIDGE_AGENT_BIN_DIR: '', PATH: binDir + path.delimiter + (process.env.PATH || ''), FAKE_CAPTURE: capture };
+    await fn({ env, capture });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+test('runAppServerTurn：planMode 时 turn/start 带 collaborationMode，plan 增量成 plan 事件', async () => {
+  await withFakeCodex(async ({ env, capture }) => {
+    const events = [];
+    for await (const ev of runAppServerTurn('codex', { prompt: '做个计划', env, keyEnv: {}, planMode: true, model: 'gpt-5.6-terra' })) events.push(ev);
+    const params = JSON.parse(readFileSync(capture, 'utf8'));
+    assert.deepEqual(params.collaborationMode, { mode: 'plan', settings: { model: 'gpt-5.6-terra' } });
+    assert.deepEqual(events.filter((e) => e.type === 'plan').map((e) => e.text), ['第一步：读代码', '第二步：改实现']);
+    assert.equal(events.find((e) => e.type === 'done').failed, false);
+  });
+});
+
+test('runAppServerTurn：不带 planMode 时 turn/start 不带 collaborationMode，也不发 plan 事件', async () => {
+  await withFakeCodex(async ({ env, capture }) => {
+    const events = [];
+    for await (const ev of runAppServerTurn('codex', { prompt: '普通一轮', env, keyEnv: {} })) events.push(ev);
+    const params = JSON.parse(readFileSync(capture, 'utf8'));
+    assert.ok(!('collaborationMode' in params));
+    assert.equal(events.filter((e) => e.type === 'plan').length, 0);
+  });
+});
+
+test('runAppServerTurn：planMode 且没选模型时从 model/list 拿默认模型', async () => {
+  await withFakeCodex(async ({ env, capture }) => {
+    const events = [];
+    for await (const ev of runAppServerTurn('codex', { prompt: '做个计划', env, keyEnv: {}, planMode: true })) events.push(ev);
+    const params = JSON.parse(readFileSync(capture, 'utf8'));
+    assert.equal(params.collaborationMode.settings.model, 'fake-model');
+    assert.equal(events.find((e) => e.type === 'done').failed, false);
+  });
 });

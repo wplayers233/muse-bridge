@@ -23,6 +23,7 @@
 import { spawn } from 'node:child_process';
 import { findCliBin } from './agent-status.mjs';
 import { cliKeyEnv } from './agent-keys.mjs';
+import { codexModels } from './agent-models.mjs';
 
 // 审批类反向请求 → 界面上那张卡的 kind。
 const APPROVAL_METHODS = Object.freeze({
@@ -386,6 +387,7 @@ export async function appServerAvailable({ env = process.env, binDir = '' } = {}
  * @param {string} [o.cwd]               工作目录
  * @param {string} [o.model]             模型（空 = CLI 自己的配置）
  * @param {string} [o.effort]            思考深度（空 = CLI 自己的配置）
+ * @param {boolean} [o.planMode]         计划模式：这一轮只出计划、不改文件（collaborationMode plan）
  * @param {string} [o.approvalPolicy]    on-request（默认）| never | untrusted | on-failure
  * @param {string} [o.sandbox]           workspace-write（默认）| read-only | danger-full-access
  * @param {(m:string,p:object)=>Promise<object>} [o.onServerRequest] 审批回调，回 {decision}
@@ -400,6 +402,7 @@ export async function* runAppServerTurn(agent, o = {}) {
     prompt, images = [], threadId = '', cwd = '', model = '', effort = '',
     approvalPolicy = 'on-request', sandbox = 'workspace-write',
     onServerRequest = null, signal = null, env = process.env, keyEnv, binDir = '',
+    planMode = false,
   } = o;
   if (agent !== 'codex') { yield { type: 'error', message: 'app-server 这条路只给 codex 用' }; return; }
   const searchEnv = binDir ? { ...env, PATH: binDir + ':' + (env.PATH || '') } : env;
@@ -465,6 +468,24 @@ export async function* runAppServerTurn(agent, o = {}) {
     // 「Override the reasoning summary for this turn and subsequent turns」）。老版本不认这个
     // 字段也不要紧：实测 app-server 忽略不认识的参数，不报错。
     turnParams.summary = 'detailed';
+    if (planMode) {
+      // 计划模式：collaborationMode 接管这一轮（Settings.model 是必填）。
+      // 显式选了模型就用选的；没选就去模型清单里拿默认的（codexModels 自带缓存）。
+      // 清单也拿不到就报错、不静默回落到普通模式——用户点了计划开关，拿到执行轮
+      // 会以为计划没生效。思考深度也一并带进 settings（不带就按上游默认）。
+      // 显式选了模型就用选的；没选才去模型清单里拿默认的（codexModels 自带缓存）。
+      let planModel = model;
+      if (!planModel) {
+        const list = await codexModels({ env: searchEnv }).catch(() => []);
+        const picked = Array.isArray(list) ? (list.find((m) => m && m.isDefault) || list[0]) : null;
+        planModel = picked ? String(picked.id || '') : '';
+      }
+      if (!planModel) { yield { type: 'error', message: '计划模式需要一个模型，拿不到模型清单' }; return; }
+      turnParams.collaborationMode = {
+        mode: 'plan',
+        settings: { model: planModel, ...(effort ? { reasoning_effort: effort } : {}) },
+      };
+    }
     const started = await rpc.call('turn/start', turnParams, 30_000);
     if (!started || started.error) { yield { type: 'error', message: '这一轮没发出去：' + JSON.stringify((started && started.error) || '') }; return; }
 
@@ -502,6 +523,12 @@ export async function* runAppServerTurn(agent, o = {}) {
       // 载荷字段确实是 delta，不用动。
       if (m === 'item/reasoning/textDelta' || m === 'item/reasoning/summaryTextDelta') {
         if (p.delta) { sawReasoningDelta = true; yield { type: 'reasoning', text: String(p.delta) }; }
+        continue;
+      }
+      // 计划增量：计划模式下计划内容走这条流式通知（PlanDeltaNotification，字段 delta）。
+      // schema 提醒：别假设拼起来的 delta 等于最终的计划项内容——这里只做实时显示。
+      if (m === 'item/plan/delta') {
+        if (p.delta) yield { type: 'plan', text: String(p.delta) };
         continue;
       }
       // 命令输出增量：累积起来，收尾时随 tool 事件一起给（同 exec 路径的 aggregated_output）。

@@ -56,6 +56,9 @@
   let draft = $state('');
   let feedEl = $state(null);
   let showReasoning = $state(false);
+  // 计划模式开关（仅 Codex）：打开后这一条只出计划、不改文件；开关本身不随消息走，
+  // 一直开着就是一直计划——关掉才回普通模式（单条生效是在服务端那层，见路由注释）。
+  let planMode = $state(false);
   let copied = $state('');
 
   loadCliStatus();
@@ -73,7 +76,7 @@
     if (!text || chat.busy || !ready) return;
     const imgs = agent === 'codex' ? atts : [];
     draft = ''; atts = []; mOpen = false; mItems = [];
-    cliSend(agent, text, imgs);
+    cliSend(agent, text, imgs, { plan: agent === 'codex' && planMode });
   }
   function onKey(e) {
     // @ 提及菜单优先（开着时方向键/回车都在菜单里），其次 / 命令菜单
@@ -298,6 +301,14 @@
                 {#if showReasoning}<div class="reason-body">{m.reasoning}</div>{/if}
               </div>
             {/if}
+            {#if m.plan}
+              <!-- 计划块：计划模式下计划内容走 item/plan/delta 流式来（见 lib/cliChat 的 plan 归约），
+                   与正文分开画，用户一眼能看出「这是计划、还没执行」。 -->
+              <div class="plan">
+                <div class="plan-t">{t('计划')}</div>
+                <div class="plan-body">{@html renderMarkdown(m.plan)}</div>
+              </div>
+            {/if}
             {#if Array.isArray(m.todos) && m.todos.length}
               <!-- 待办清单：逐条画（codex 的 todo_list 以前只压成一行「待办清单」，条目全丢） -->
               <div class="todos">
@@ -437,6 +448,13 @@
           {/if}
           <span class="bspacer"></span>
           {#if agent === 'codex'}
+            <!-- 计划模式开关（仅 Codex）：打开后这一条只出计划、不改文件。
+                 关掉再发就是普通模式（按计划执行时关掉它就行）。 -->
+            <button class="plan-toggle" class:on={planMode} onclick={() => (planMode = !planMode)}
+              disabled={!ready} aria-pressed={planMode} aria-label={t('计划模式')}
+              title={t('计划模式：只出计划，不改文件')}>
+              {t('计划模式')}
+            </button>
             <CliModelPicker agent="codex" disabled={chat.busy || !ready} />
           {/if}
           {#if chat.busy}
@@ -573,6 +591,23 @@
 
   .reason-t { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; color: var(--faint, #8a8a86); padding: 2px 0; }
   .reason-body { font-size: 13px; color: var(--faint, #8a8a86); white-space: pre-wrap; border-left: 2px solid currentColor; padding-left: 10px; margin: 4px 0 8px; opacity: .85; }
+
+  /* 计划块（Codex 计划模式）：与正文分开画，带描边 + 弱底，一眼看出「这是计划、还没执行」。 */
+  .plan { margin: 2px 0 4px; padding: 10px 12px; border-radius: 12px;
+    border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+    background: color-mix(in srgb, currentColor 4%, transparent); }
+  .plan-t { font-size: 12px; font-weight: 600; opacity: .8; margin-bottom: 6px; }
+  .plan-body { font-size: 14px; line-height: 1.65; }
+  .plan-body :global(p) { margin: 0 0 8px; }
+  .plan-body :global(p:last-child) { margin-bottom: 0; }
+  .plan-body :global(pre) { overflow-x: auto; border-radius: 10px; }
+
+  /* 计划模式开关胶囊（仅 Codex，模型胶囊左边）：开着时 accent 底 + 加粗，关着是弱描边。 */
+  .plan-toggle { flex: none; font-size: 12px; padding: 5px 11px; border-radius: 999px; white-space: nowrap;
+    border: 1px solid color-mix(in srgb, currentColor 20%, transparent); color: inherit; }
+  .plan-toggle.on { background: color-mix(in srgb, var(--agent-accent, currentColor) 18%, transparent);
+    border-color: color-mix(in srgb, var(--agent-accent, currentColor) 45%, transparent); font-weight: 600; }
+  .plan-toggle:disabled { opacity: .35; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .5; }
   .caret-d { font-size: 10px; }
   .thinking { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--faint, #8a8a86); }

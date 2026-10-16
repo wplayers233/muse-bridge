@@ -109,14 +109,14 @@ const sseSend = (res, ev) => { try { res.write('data: ' + JSON.stringify(ev) + '
 // 跟原来（zcode 现在还是）的区别只有一点：这一轮的生命周期跟 HTTP 请求解绑。
 // res 断开只退订，不断进程；turn 在后台继续跑，回来调 /api/codex/turns/attach 接上。
 // 选路（app-server / exec 回落）、审批等待、事件缓冲全在 runtime/codex-turns.mjs 里。
-async function codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd }) {
+async function codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan }) {
   // env/keyEnv：每身份注入——user 用自己的 key（<dataDir>/agents）+ 自己的 CLI 数据目录
   // （CODEX_HOME，见 runtime/agent-keys.mjs）；admin 不设目录 = 继承宿主。
   const spawnEnv = { ...process.env, ...cliDataEnv(ctx) };
   const keyEnv = cliSpawnKeyEnv(ctx, 'codex');
   const r = await startCodexTurn({
     key: codexCallerKey(ctx), dataDir: ctx.dataDir, prompt, sessionId, images, cwd,
-    model: prefs.model, effort: prefs.effort, env: spawnEnv, keyEnv,
+    model: prefs.model, effort: prefs.effort, env: spawnEnv, keyEnv, plan: plan === true,
   });
   if (!r.ok) return json(res, 409, { error: r.error });
   // 挂上 SSE：先 replay 已缓冲的，再转实时。断开只退订（attachCodexTurn 内部处理），
@@ -223,7 +223,9 @@ export function registerAgentCliRoutes(router, { identify }) {
       // 客户端断开只退订、不杀进程，回来调 /api/codex/turns/attach 接上。
       // zcode 保持原样：断开即杀（下面那套）。
       if (agent === 'codex') {
-        return codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd });
+        // 计划模式是单条消息的开关（前端输入框的「计划模式」胶囊），不进 prefs 存量：
+        // 只给这一条用，下一条默认回普通模式。
+        return codexChatHandler(req, res, ctx, { prompt, sessionId, images, prefs, cwd, plan: body.plan === true });
       }
       const ac = new AbortController();
       let gone = false;

@@ -34,7 +34,8 @@ function normMessages(messages) {
   return list.slice(-MAX_MESSAGES).map((m) => {
     if (!m || typeof m !== 'object') return { role: 'agent', text: '' };
     const out = { ...m };
-    for (const k of ['text', 'reasoning', 'summary']) {
+    // 计划内容（plan）和正文/思考同一待遇：长串截断，防快照无限膨胀。
+    for (const k of ['text', 'reasoning', 'summary', 'plan']) {
       if (typeof out[k] === 'string' && out[k].length > MAX_TEXT) out[k] = out[k].slice(0, MAX_TEXT);
     }
     if (Array.isArray(out.tools)) {

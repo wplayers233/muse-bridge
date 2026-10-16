@@ -86,12 +86,12 @@ async function waitFor(fn, ms, label) {
 let keySeq = 0;
 // 开一轮（dataDir 传空 = 不碰真实数据目录；keyEnv 传 {} = 不读真实 key）。
 // t.after 里停 turn + 删临时目录，保证桩进程不泄漏。
-async function startTurn(t, { key, env, sessionId = '' } = {}) {
+async function startTurn(t, { key, env, sessionId = '', plan = false } = {}) {
   const e = env || makeEnv();
   const k = key || ('codex:test-' + (++keySeq) + '-' + Date.now().toString(36));
   const r = await startCodexTurn({
     key: k, dataDir: '', prompt: '测试问题', sessionId,
-    env: e.env, keyEnv: {}, binDir: e.binDir,
+    env: e.env, keyEnv: {}, binDir: e.binDir, plan,
   });
   assert.equal(r.ok, true, '开轮应该成功');
   const turn = r.turn;
@@ -144,6 +144,16 @@ test('attach 重放：跑完的 turn 能整轮重放', async (t) => {
   const texts = evs.filter((e) => e.type === 'text').map((e) => e.text).join('');
   assert.match(texts, /第一段/);
   assert.match(texts, /第二段/);
+});
+
+test('计划模式 + 老版本回落：先给提示，这一轮按普通模式跑', async (t) => {
+  // 桩的 app-server 探测故意非零 → 走 exec 回落（老版本没 collaborationMode），
+  // 计划开关不能静默当普通轮跑：先给一句提示，再按普通模式跑完。
+  const { turn } = await startTurn(t, { plan: true });
+  await waitFor(
+    () => turn.events.some((e) => e.type === 'notice' && /不支持计划模式/.test(e.text || '')),
+    10000, '不支持计划模式提示');
+  await waitFor(() => turn.done, 15000, 'turn 跑完');
 });
 
 test('显式 stop：进程被杀，turn 收尾', async (t) => {

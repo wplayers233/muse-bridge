@@ -97,6 +97,9 @@ export default {
   '发送': 'Send',
   '停止': 'Stop',
   '思考': 'Thinking',
+  '计划': 'Plan',
+  '计划模式': 'Plan mode',
+  '计划模式：只出计划，不改文件': 'Plan mode: plan only, no file changes',
   '工具': 'Tool',
   '正在工作…': 'Working…',
 
