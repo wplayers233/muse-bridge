@@ -17,8 +17,10 @@
   import { dock } from '../../lib/dock.svelte.js';
   import { t, tc, tr } from '../../lib/i18n.js';
   import { showToast } from '../../lib/toast.svelte.js';
+  import { cliChat } from '../../lib/cliChat.svelte.js';
+  import { parseDiff, parseLastTurnDiff } from '../../lib/reviewDiff.js';
   import { reviewComments, addReviewComment, dropReviewComment, dropAllReviewComments, reviewCommentCount } from '../../lib/reviewComments.svelte.js';
-  let { dockState = dock } = $props();
+  let { dockState = dock, agent = '' } = $props();
 
   let loading = $state(true);
   let err = $state('');
@@ -38,43 +40,31 @@
   const ws = $derived(dockState.ws || '');
   const pendingCount = $derived(reviewCommentCount(ws));
 
-  // ── unified diff 解析：文件头 + hunks，每行带新/旧文件行号（行内评论的锚点） ──
-  function parseDiff(text) {
-    const lines = String(text || '').split('\n');
-    while (lines.length && lines[lines.length - 1] === '') lines.pop();
-    const header = [];
-    const hunks = [];
-    let cur = null;
-    let newNo = 0, oldNo = 0;
-    for (const l of lines) {
-      if (l.startsWith('@@')) {
-        const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(l);
-        oldNo = m ? +m[1] : 0;
-        newNo = m ? +m[3] : 0;
-        cur = { header: l, lines: [] };
-        hunks.push(cur);
-        continue;
-      }
-      if (!cur) { header.push(l); continue; }
-      if (l.startsWith('+')) cur.lines.push({ cls: 'add', text: l, newNo: newNo++, oldNo: null });
-      else if (l.startsWith('-')) cur.lines.push({ cls: 'del', text: l, oldNo: oldNo++, newNo: null });
-      else if (l.startsWith('\\')) cur.lines.push({ cls: 'meta', text: l, newNo: null, oldNo: null });
-      else cur.lines.push({ cls: 'ctx', text: l, newNo: newNo++, oldNo: oldNo++ });
-    }
-    return { header, hunks };
-  }
+  // ── unified diff 解析与上一轮 diff 切文件：见 lib/reviewDiff.js（纯函数，可单测）──
 
   function scopeQuery() {
     if (scope === 'commit') return `&scope=commit&sha=${enc(sha)}`;
     if (scope === 'branch' && baseBranch) return `&scope=branch&base=${enc(baseBranch)}`;
-    if (scope === 'lastturn') return '&scope=lastturn';
     return `&scope=${scope}`;
   }
+
+  // ── 上一轮（P1）：当前对话里最后一条带 diff 的 agent 消息（turn/diff/updated 的整轮聚合 diff）──
+  // 最后一条带 diff 的 agent 消息（新一轮的空条目不算——上一轮仍是上一条有 diff 的）。
+  const lastTurnItem = $derived(agent && cliChat[agent]?.items
+    ? [...cliChat[agent].items].reverse().find((m) => m.role === 'agent' && String(m.diff || '').trim())
+    : null);
+  const lastTurnFiles = $derived(lastTurnItem ? parseLastTurnDiff(lastTurnItem.diff, t('上一轮改动')) : []);
+  const lastTurnTotal = $derived(lastTurnFiles.reduce((a, f) => ({ add: a.add + (f.add || 0), del: a.del + (f.del || 0) }), { add: 0, del: 0 }));
+  // 渲染统一走 view：git 范围用后端 data，上一轮用本地算的（不走后端；截断标记来自快照）。
+  const view = $derived(scope === 'lastturn'
+    ? { git: true, scope: 'lastturn', branch: '', base: t('上一轮'), files: lastTurnFiles, total: lastTurnTotal, truncated: !!lastTurnItem?.diffTruncated }
+    : data);
 
   async function refresh() {
     loading = true; err = '';
     try {
-      if (scope === 'lastturn') { data = { git: true, scope: 'lastturn', files: [], total: { add: 0, del: 0 }, truncated: false, branch: '', base: '' }; open = {}; }
+      // 上一轮不走后端：view 直接从当前对话的 m.diff 派生（cliChat 是 $state，diff 到来自动刷新）。
+      if (scope === 'lastturn') { open = {}; }
       else {
         data = await api.get(`/api/claude/review?ws=${enc(ws)}${scopeQuery()}`);
         open = {};
@@ -105,6 +95,11 @@
 
   async function toggle(f) {
     if (open[f.path]) { const { [f.path]: _, ...rest } = open; open = rest; return; }
+    // 上一轮：chunk 已在本地，直接解析，不调后端。
+    if (scope === 'lastturn') {
+      open = { ...open, [f.path]: { loading: false, text: f.chunk || '', bin: !!f.bin, truncated: false, parsed: parseDiff(f.chunk || '') } };
+      return;
+    }
     open = { ...open, [f.path]: { loading: true } };
     try {
       // 注意别用 st= 传状态——st/ct 是身份系统保留参数（share/snap token），会被识别成假身份 401。
@@ -201,33 +196,34 @@
     <div class="rv-empty"><span class="spin"></span>{t('正在读取变更…')}</div>
   {:else if err}
     <div class="rv-empty">{err}<button class="rv-retry" onclick={refresh}>{t('重试')}</button></div>
-  {:else if !data || !data.git}
+  {:else if !view || !view.git}
     <div class="rv-empty">{t('该工作空间不是 git 仓库')}</div>
-  {:else if scope === 'lastturn'}
-    <div class="rv-empty">{t('上一轮的改动暂未接入')}</div>
   {:else}
     <div class="rv-head">
-      <span class="rv-branch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="8" r="2.6"/><path d="M6 8.6v6.8M18 10.6c0 4-5 3.4-8 5"/></svg>{data.base}</span>
-      <span class="rv-arrow">→</span>
-      <span class="rv-wt">working tree</span>
+      <span class="rv-branch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><circle cx="18" cy="8" r="2.6"/><path d="M6 8.6v6.8M18 10.6c0 4-5 3.4-8 5"/></svg>{view.base}</span>
+      {#if scope !== 'lastturn'}
+        <span class="rv-arrow">→</span>
+        <span class="rv-wt">working tree</span>
+      {/if}
       <button class="rv-refresh" aria-label={t('刷新')} onclick={refresh}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v5h-5"/></svg></button>
     </div>
     {#if scope === 'commit' && !sha}
       <div class="rv-empty">{t('请先选择一个提交')}</div>
-    {:else if !data.files.length}
-      <div class="rv-empty">{t('工作树很干净，没有改动')}</div>
+    {:else if !view.files.length}
+      <div class="rv-empty">{scope === 'lastturn' ? t('上一轮没有产生改动') : t('工作树很干净，没有改动')}</div>
     {:else}
-      <div class="rv-hint">{t('大文件默认折叠，点击文件展开 diff。共 {n} 个文件', { n: data.files.length })} <em class="add">+{data.total.add}</em> <em class="del">−{data.total.del}</em>{#if data.truncated}{t('（已截断）')}{/if}</div>
-      {#if data.files.length}
+      <div class="rv-hint">{t('大文件默认折叠，点击文件展开 diff。共 {n} 个文件', { n: view.files.length })} <em class="add">+{view.total.add}</em> <em class="del">−{view.total.del}</em>{#if view.truncated}{t('（已截断）')}{/if}</div>
+      {#if view.files.length}
         <div class="rv-actions">
           {#if canStage}<button class="rv-act" onclick={() => gitOp('stage', 'all')}>{t('全部暂存')}</button>{/if}
           {#if canUnstage}<button class="rv-act" onclick={() => gitOp('unstage', 'all')}>{t('全部取消暂存')}</button>{/if}
           {#if canRevert}<button class="rv-act danger" onclick={() => gitOp('revert', 'all')}>{confirmKey === 'revert:all::' ? t('确认还原全部？') : t('全部还原')}</button>{/if}
           {#if scope === 'commit'}<span class="rv-ro">{t('提交是只读的')}</span>{/if}
+          {#if scope === 'lastturn'}<span class="rv-ro">{t('上一轮 diff 是快照，暂存 / 还原请切到未暂存范围')}</span>{/if}
         </div>
       {/if}
       <div class="rv-list">
-        {#each data.files as f (f.path)}
+        {#each view.files as f (f.path)}
           <div class="rv-file">
             <button class="rv-row" onclick={() => toggle(f)}>
               <svg class="chev" class:open={!!open[f.path]} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>

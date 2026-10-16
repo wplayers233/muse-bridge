@@ -93,7 +93,7 @@
           {:else}
             {#key ws}
               {#if view === 'review'}
-                <ReviewPanel {dockState} />
+                <ReviewPanel {dockState} {agent} />
               {:else if view === 'term'}
                 <TermPanel {dockState} />
               {:else if view === 'files'}
