@@ -1,0 +1,36 @@
+diff --git a/a.js b/a.js
+index 35dd59e7c911a1e9ea52e2ec5c0f2c1dc714ca0b..bd61f90a0d742ab8da48721d3dcffc08d9caf534
+--- a/a.js
++++ b/a.js
+@@ -1,2 +1,2 @@
+-const x = 1;
++const x = 42;
+ const y = 2;
+diff --git a/b.js b/b.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..b474e33d50f55a491e066d7afc127837d3462e91
+--- /dev/null
++++ b/b.js
+@@ -0,0 +1 @@
++// hello world
+diff --git a/d.txt b/d.txt
+deleted file mode 100644
+index 420201136f42027c6f971934cc73615082d65160..0000000000000000000000000000000000000000
+--- a/d.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-to be deleted
+diff --git a/my note.txt b/my note.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce013625030ba8dba906f756967f9e9ca394464a
+--- /dev/null
++++ b/my note.txt
+@@ -0,0 +1 @@
++hello
+diff --git a/中文文件.txt b/中文文件.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..e6076a05b53658ebd812398523da7f38fc552aa1
+--- /dev/null
++++ b/中文文件.txt
+@@ -0,0 +1 @@
++你好
