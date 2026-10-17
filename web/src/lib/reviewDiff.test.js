@@ -88,3 +88,40 @@ rename to new.js
 `);
   assert.equal(files[0].path, 'new.js');
 });
+
+// P4 收口：增删计数按 hunk 头消费，不能用 startsWith('+++')/('---') 排除——
+// 内容本身以 ++ 开头的新增行渲染成 +++foo、以 -- 开头的删除行渲染成 ---bar，
+// 旧写法会把它们当成文件头漏计。
+test('parseLastTurnDiff：内容以 ++/-- 开头的行照常计数（不是文件头）', () => {
+  const files = parseLastTurnDiff(`diff --git a/x.js b/x.js
+--- a/x.js
++++ b/x.js
+@@ -1,2 +1,3 @@
+ const a = 1;
++++foo
+ const b = 2;
+diff --git a/y.js b/y.js
+--- a/y.js
++++ b/y.js
+@@ -1,3 +1,2 @@
+ const a = 1;
+---bar
+ const b = 2;
+`);
+  assert.equal(files.length, 2);
+  assert.deepEqual([files[0].add, files[0].del], [1, 0], '+++foo 是新增内容行，计 1 增');
+  assert.deepEqual([files[1].add, files[1].del], [0, 1], '---bar 是删除内容行，计 1 删');
+});
+
+test('parseLastTurnDiff：\\ No newline 行不占行数（不干扰 hunk 头计数）', () => {
+  const files = parseLastTurnDiff(`diff --git a/x.js b/x.js
+--- a/x.js
++++ b/x.js
+@@ -1 +1 @@
+-a
+\\ No newline at end of file
++b
+\\ No newline at end of file
+`);
+  assert.deepEqual([files[0].add, files[0].del], [1, 1]);
+});

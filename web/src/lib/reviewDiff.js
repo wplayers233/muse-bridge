@@ -55,10 +55,32 @@ export function parseLastTurnDiff(diff, fallbackName) {
   }
   return chunks.map(({ path: p, chunk }) => {
     let add = 0, del = 0, bin = false, st = 'M';
-    for (const l of chunk.split('\n')) {
-      if (l.startsWith('Binary files ')) bin = true;
-      else if (l.startsWith('+') && !l.startsWith('+++')) add++;
-      else if (l.startsWith('-') && !l.startsWith('---')) del++;
+    // 二进制：整块搜（Binary 行只在文件头区，没有 @@ hunk）。
+    if (/^Binary files /m.test(chunk)) bin = true;
+    // 增删计数按 hunk 头消费（@@ -a,b +c,d @@ 里 b 个旧行、d 个新行），不能用
+    // startsWith('+++')/('---') 排除——内容本身以 ++ 开头的新增行渲染成 +++foo、
+    // 以 -- 开头的删除行渲染成 ---bar，旧写法会把它们当成文件头漏计。
+    // 区分文件头与内容行靠位置：---/+++ 文件头在第一个 @@ 之前，不计；@@ 之后的
+    // +++foo / ---bar 是内容行，照常计。b/d 省略时默认 1；\ No newline 行不占行数。
+    const lines = chunk.split('\n');
+    let i = 0;
+    while (i < lines.length && !lines[i].startsWith('@@')) i++;
+    while (i < lines.length) {
+      const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(lines[i]);
+      if (!m) { i++; continue; }
+      let oldLeft = m[2] === undefined ? 1 : +m[2];
+      let newLeft = m[4] === undefined ? 1 : +m[4];
+      i++;
+      while (i < lines.length && (oldLeft > 0 || newLeft > 0)) {
+        const l = lines[i];
+        if (l.startsWith('\\')) { i++; continue; } // \ No newline，不占行
+        if (l.startsWith('@@')) break; // 下一个 hunk（防御：行数对不上时）
+        if (l.startsWith('+') && newLeft > 0) { add++; newLeft--; i++; }
+        else if (l.startsWith('-') && oldLeft > 0) { del++; oldLeft--; i++; }
+        // 上下文行：' ' 开头；裸空行是内容为空的上下文行（git 有时会省略尾空格），也当上下文。
+        else if ((l.startsWith(' ') || l === '') && oldLeft > 0 && newLeft > 0) { oldLeft--; newLeft--; i++; }
+        else i++; // 行数对不上（截断/畸形 diff）时跳过，不死循环
+      }
     }
     if (/^--- \/dev\/null$/m.test(chunk)) st = 'A';
     else if (/^\+\+\+ \/dev\/null$/m.test(chunk)) st = 'D';
