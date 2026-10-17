@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -202,6 +202,114 @@ test('git 操作：revert 文件 → 回到 HEAD（暂存+未暂存都丢）', a
     assert.equal(read(r.dir, 'a.txt'), 'a1\na2\na3\na4\na5\na6\na7\na8\n', '回到 HEAD 内容');
     assert.equal(gitStatus(r.dir).trim(), '?? c.txt', 'a.txt 干净了，未跟踪 c.txt 还在');
   } finally { r.done(); }
+});
+
+// P0 收口：revert 文件必须按四态分发（在 base 里？在索引里？），不能只看「在不在索引里」。
+// 用例 1：新增并已暂存（不在 base，在索引）→ git rm -f（索引+工作区一起删），不能 409。
+test('git 操作：revert 已暂存的新增文件 → 索引+工作区一起消失（不是 409）', async () => {
+  const r = makeRepo();
+  try {
+    writeFileSync(path.join(r.dir, 'new.txt'), 'new\n');
+    g(r.dir, 'add', 'new.txt');
+    assert.match(gitStatus(r.dir), /^A +new\.txt$/m, '夹具：new.txt 已暂存（A ）');
+    const st = await admin('POST', '/api/claude/review/git', { body: { ws: r.dir, op: 'revert', level: 'file', file: 'new.txt' } });
+    assert.equal(st.code, 200, st.text);
+    assert.equal(existsSync(path.join(r.dir, 'new.txt')), false, 'new.txt 从工作区消失');
+    assert.doesNotMatch(gitStatus(r.dir), /new\.txt/, 'new.txt 从索引消失');
+  } finally { r.done(); }
+});
+
+// 用例 2：暂存删除（在 base，不在索引）→ checkout base -- file 恢复，不能静默无效。
+test('git 操作：revert 已暂存删除的文件 → 从 base 恢复（不是静默无效）', async () => {
+  const r = makeRepo();
+  try {
+    g(r.dir, 'rm', '--quiet', 'b.txt');
+    assert.match(gitStatus(r.dir), /^D +b\.txt$/m, '夹具：b.txt 已暂存删除（D ）');
+    assert.equal(existsSync(path.join(r.dir, 'b.txt')), false, '夹具：b.txt 已不在工作区');
+    const st = await admin('POST', '/api/claude/review/git', { body: { ws: r.dir, op: 'revert', level: 'file', file: 'b.txt' } });
+    assert.equal(st.code, 200, st.text);
+    assert.equal(read(r.dir, 'b.txt'), 'b1\nb2-changed\n', 'b.txt 从 HEAD 恢复到工作区');
+    assert.doesNotMatch(gitStatus(r.dir), /b\.txt/, 'b.txt 不再有暂存删除');
+  } finally { r.done(); }
+});
+
+// 用例 3：revert-all 必须删掉「相对 base 新增」的文件（不在 base，但已提交、不是未跟踪）。
+test('git 操作：revert-all 删掉相对 base 新增的已提交文件', async () => {
+  const r = makeRepo();
+  try {
+    writeFileSync(path.join(r.dir, 'added.txt'), 'added\n');
+    g(r.dir, 'add', 'added.txt');
+    g(r.dir, 'commit', '-m', 'add added.txt');
+    writeFileSync(path.join(r.dir, 'a.txt'), 'a1\ndirty\n');
+    const base = g(r.dir, 'merge-base', 'HEAD', 'topic').trim(); // topic 指在 sha1，基线 = sha1
+    const st = await admin('POST', '/api/claude/review/git', { body: { ws: r.dir, op: 'revert', level: 'all', base } });
+    assert.equal(st.code, 200, st.text);
+    assert.equal(existsSync(path.join(r.dir, 'added.txt')), false, '相对 base 新增的 added.txt 被删掉');
+    assert.equal(read(r.dir, 'a.txt'), 'a1\na2\na3\na4\na5\na6\na7\na8\n', 'a.txt 回到基线内容');
+    // 注意：git status 是相对 HEAD 的——HEAD（含 added.txt 的提交）≠ base，
+    // 所以 status 会把「回到基线」显示为暂存改动（M/D），不是干净。正确的断言是
+    // 工作区与索引都等于 base：git diff <base> 与 git diff --cached <base> 都为空。
+    assert.equal(gitDiff(r.dir, base).trim(), '', '工作区回到基线');
+    assert.equal(gitDiff(r.dir, '--cached', base).trim(), '', '索引回到基线');
+  } finally { r.done(); }
+});
+
+// ws 是仓库子目录时坐标系必须对：cat-file 用仓库相对（prefix + 工作区相对），
+// diff 输出是仓库相对、按 prefix 剥回工作区相对；根目录文件不能被子目录操作碰到。
+test('git 操作：ws 是仓库子目录时 revert 坐标系正确', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'bridge-dock-sub-'));
+  try {
+    g(dir, 'init', '-b', 'main');
+    g(dir, 'config', 'user.email', 't@t.t');
+    g(dir, 'config', 'user.name', 't');
+    writeFileSync(path.join(dir, 'root.txt'), 'root\n');
+    mkdirSync(path.join(dir, 'sub'));
+    writeFileSync(path.join(dir, 'sub', 's.txt'), 's1\n');
+    g(dir, 'add', '-A');
+    g(dir, 'commit', '-m', 'init');
+    const base = g(dir, 'rev-parse', 'HEAD').trim();
+    const ws = path.join(dir, 'sub');
+    // 子目录里：暂存新增 + 暂存删除
+    writeFileSync(path.join(ws, 'new.txt'), 'new\n');
+    g(ws, 'add', 'new.txt');
+    g(ws, 'rm', '--quiet', 's.txt');
+    const st1 = await admin('POST', '/api/claude/review/git', { body: { ws, op: 'revert', level: 'file', file: 'new.txt' } });
+    assert.equal(st1.code, 200, st1.text);
+    assert.equal(existsSync(path.join(ws, 'new.txt')), false, '子目录暂存新增被清掉');
+    const st2 = await admin('POST', '/api/claude/review/git', { body: { ws, op: 'revert', level: 'file', file: 's.txt' } });
+    assert.equal(st2.code, 200, st2.text);
+    assert.equal(read(ws, 's.txt'), 's1\n', '子目录暂存删除被恢复');
+    // revert-all：相对 base 新增的已提交文件（只在 sub 里）被删，根目录文件不动
+    writeFileSync(path.join(ws, 'added.txt'), 'added\n');
+    g(ws, 'add', 'added.txt');
+    g(dir, 'commit', '-m', 'add added');
+    writeFileSync(path.join(ws, 's.txt'), 's1\ndirty\n');
+    const st3 = await admin('POST', '/api/claude/review/git', { body: { ws, op: 'revert', level: 'all', base } });
+    assert.equal(st3.code, 200, st3.text);
+    assert.equal(existsSync(path.join(ws, 'added.txt')), false, '子目录里相对 base 新增的 added.txt 被删掉');
+    assert.equal(read(ws, 's.txt'), 's1\n', '子目录文件回到基线');
+    assert.equal(read(dir, 'root.txt'), 'root\n', '根目录文件没被子目录操作碰到');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 无提交的新仓库没有 HEAD：checkout HEAD / cat-file -e HEAD:... 都会炸，base 改用空树。
+// revert 表现为「清掉暂存的新增、恢复不出任何文件」，不回 500。
+test('git 操作：无提交新仓库 revert 不用 HEAD（走空树，不回 500）', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'bridge-dock-nohead-'));
+  try {
+    g(dir, 'init', '-b', 'main');
+    g(dir, 'config', 'user.email', 't@t.t');
+    g(dir, 'config', 'user.name', 't');
+    writeFileSync(path.join(dir, 'new.txt'), 'new\n');
+    g(dir, 'add', 'new.txt');
+    const st = await admin('POST', '/api/claude/review/git', { body: { ws: dir, op: 'revert', level: 'file', file: 'new.txt' } });
+    assert.equal(st.code, 200, st.text);
+    assert.equal(existsSync(path.join(dir, 'new.txt')), false, '暂存的新增被清掉');
+    writeFileSync(path.join(dir, 'u.txt'), 'u\n');
+    const st2 = await admin('POST', '/api/claude/review/git', { body: { ws: dir, op: 'revert', level: 'all' } });
+    assert.equal(st2.code, 200, st2.text);
+    assert.equal(gitStatus(dir).trim(), '', '无提交仓库 revert-all 后干净');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('git 操作：stage hunk → 只有该 hunk 进暂存区', async () => {

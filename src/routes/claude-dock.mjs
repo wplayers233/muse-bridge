@@ -402,6 +402,9 @@ export function registerClaudeDockRoutes(router, { identify }) {
       if ((await git(ws, ['rev-parse', '--verify', '-q', b]))) base = b;
       else return json(res, 400, { error: '找不到恢复目标' });
     }
+    // 无提交的新仓库没有 HEAD：checkout HEAD / cat-file -e HEAD:... 都会炸，改用空树
+    // （revert 表现为清掉暂存的新增、恢复不出任何文件；unstage 仍正常工作）。
+    if (op === 'revert' && !body.base && (await git(ws, ['rev-parse', '--verify', '-q', 'HEAD'])) == null) base = EMPTY_TREE;
     const run = async (args, input = null) => {
       const r = await git2(ws, args, { input });
       if (!r.ok) return json(res, 409, { error: r.err || 'git 操作失败' });
@@ -410,18 +413,45 @@ export function registerClaudeDockRoutes(router, { identify }) {
     if (level === 'all') {
       if (op === 'stage') return run(['add', '-A', '--', '.']);
       if (op === 'unstage') return run(['reset', '-q', '--', '.']);
-      // revert-all：先恢复到 base，再清未跟踪（未跟踪文件删除不可恢复，前端需二次确认）。
+      // revert-all：先恢复到 base，再清相对 base 新增的路径（checkout 只更新 base 里已有的
+      // 路径；新增文件既不在 base、又不是未跟踪，clean 清不掉），最后清未跟踪。
+      // （未跟踪文件删除不可恢复，前端需二次确认。）
       const r1 = await git2(ws, ['checkout', base, '--', '.']);
-      if (!r1.ok) return json(res, 409, { error: r1.err || 'git 操作失败' });
+      // checkout 的 pathspec 在「索引与 base 在 ws 下都无路径」时报错（无提交新仓库、
+      // 索引已空）——那就是没东西可恢复，继续往下走（diff 为空、clean 清未跟踪），
+      // 不是真失败。其他 checkout 错误仍按 409。
+      if (!r1.ok && !r1.err.includes('did not match any file')) return json(res, 409, { error: r1.err || 'git 操作失败' });
+      // 相对 base 新增 = 索引里有、base 里没有（--no-renames 防重命名漏报 A）。
+      // diff 输出是仓库相对路径（git diff 默认不剥前缀），按 prefix 剥回工作区相对。
+      const addedOut = await git(ws, ['diff', '--cached', '--name-only', '--diff-filter=A', '--no-renames', base, '--', '.']);
+      if (addedOut == null) return json(res, 409, { error: 'git 操作失败' });
+      const prefix = await gitPrefix(ws);
+      const added = addedOut.split('\n').map((l) => l.trim()).filter(Boolean)
+        .map((p) => (prefix && p.startsWith(prefix) ? p.slice(prefix.length) : p))
+        .filter((p) => p && insideWs(ws, p));
+      if (added.length) {
+        const r2 = await git2(ws, ['rm', '-f', '--', ...added]);
+        if (!r2.ok) return json(res, 409, { error: r2.err || 'git 操作失败' });
+      }
       return run(['clean', '-fd', '--', '.']);
     }
     if (level === 'file') {
       if (op === 'stage') return run(['add', '--', file]);
       if (op === 'unstage') return run(['reset', '-q', '--', file]);
-      // revert-file：未跟踪 → 删除；已跟踪 → 从 base 恢复（base=HEAD 时即丢弃暂存+未暂存）。
-      const tracked = await git(ws, ['ls-files', '--error-unmatch', '--', file]);
-      if (tracked == null) return run(['clean', '-f', '--', file]);
-      return run(['checkout', base, '--', file]);
+      // revert-file：按四态分发，不能只看「在不在索引里」：
+      //   在 base + 在索引 → checkout base -- file
+      //   在 base + 不在索引（暂存删除）→ checkout base -- file 恢复
+      //   不在 base + 在索引（新增已暂存）→ git rm -f（索引+工作区一起删）
+      //   不在 base + 不在索引（未跟踪）→ clean -f
+      // 「在不在 base」用 cat-file -e <base>:<仓库相对路径>（ls-files 看的是索引，不是 base）；
+      // cat-file 的路径必须是仓库相对（gitPrefix + 工作区相对），checkout/rm/clean 的
+      // pathspec 是相对 cwd 的，用工作区相对路径即可。
+      const repoPath = (await gitPrefix(ws)) + file;
+      const inBase = (await git(ws, ['cat-file', '-e', base + ':' + repoPath])) != null;
+      if (inBase) return run(['checkout', base, '--', file]);
+      const inIndex = (await git(ws, ['ls-files', '--error-unmatch', '--', file])) != null;
+      if (inIndex) return run(['rm', '-f', '--', file]);
+      return run(['clean', '-f', '--', file]);
     }
     // level=hunk：patch 校验 + --check + apply。
     const patch = String(body.patch || '');
